@@ -355,10 +355,11 @@
     name = "0086-arm64-dts-qcom-sdm845-oneplus-Enable-NFC";
     patch = ./0086-arm64-dts-qcom-sdm845-oneplus-Enable-NFC.patch;
   }
-  {
-    name = "0087-arm64-dts-qcom-sdm845-shift-axolotl-Correct-touchscr";
-    patch = ./0087-arm64-dts-qcom-sdm845-shift-axolotl-Correct-touchscr.patch;
-  }
+  # Upstreamed.
+  # {
+  #    name = "0087-arm64-dts-qcom-sdm845-shift-axolotl-Correct-touchscr";
+  #    patch = ./0087-arm64-dts-qcom-sdm845-shift-axolotl-Correct-touchscr.patch;
+  #  }
   {
     name = "0088-arm64-dts-qcom-sdm845-shift-axolotl-Enable-NFC";
     patch = ./0088-arm64-dts-qcom-sdm845-shift-axolotl-Enable-NFC.patch;
@@ -477,10 +478,11 @@
     name = "0115-arm64-dts-qcom-sdm845-xiaomi-beryllium-Introduce-fra";
     patch = ./0115-arm64-dts-qcom-sdm845-xiaomi-beryllium-Introduce-fra.patch;
   }
-  {
-    name = "0116-arm64-dts-qcom-sdm845-oneplus-Drop-address-from-fram";
-    patch = ./0116-arm64-dts-qcom-sdm845-oneplus-Drop-address-from-fram.patch;
-  }
+  # Upstreamed.
+  # {
+  #    name = "0116-arm64-dts-qcom-sdm845-oneplus-Drop-address-from-fram";
+  #    patch = ./0116-arm64-dts-qcom-sdm845-oneplus-Drop-address-from-fram.patch;
+  #  }
   {
     name = "0117-arm64-dts-qcom-sdm845-shift-axolotl-Convert-fb-to-us";
     patch = ./0117-arm64-dts-qcom-sdm845-shift-axolotl-Convert-fb-to-us.patch;
@@ -676,10 +678,11 @@
     name = "0163-HACK-arm64-dts-qcom-xiaomi-beryllium-enable-serial-d";
     patch = ./0163-HACK-arm64-dts-qcom-xiaomi-beryllium-enable-serial-d.patch;
   }
-  {
-    name = "0164-arm64-dts-qcom-sdm845-xiaomi-beryllium-common-update";
-    patch = ./0164-arm64-dts-qcom-sdm845-xiaomi-beryllium-common-update.patch;
-  }
+  # Upstreamed.
+  # {
+  #  name = "0164-arm64-dts-qcom-sdm845-xiaomi-beryllium-common-update";
+  #  patch = ./0164-arm64-dts-qcom-sdm845-xiaomi-beryllium-common-update.patch;
+  # }
   {
     name = "0165-drm-panel-nt36672a-move-dsi-commands-from-prepare-un";
     patch = ./0165-drm-panel-nt36672a-move-dsi-commands-from-prepare-un.patch;
