@@ -36,7 +36,12 @@ in
 
   config = lib.mkIf cfg.enable {
     warnings =
-      if !config.boot.loader.systemd-boot.enable then
+      if
+        !config.boot.loader.systemd-boot.enable
+        # The verified-boot module replaces the stock systemd-boot install
+        # with its own signed one; that is a supported configuration.
+        && !config.vanilla-mobile.verifiedBoot.enable
+      then
         [
           ''
             systemd-boot is disabled. fairphone-fp5 has currently only
@@ -62,6 +67,16 @@ in
       # userspace so tags can be read.
       soc.qcm6490.nfc.enable = true;
     };
+
+    # This device's half of the verified-boot chain (the generic UKI-signing
+    # half lives in vanilla-mobile.verifiedBoot): AVB boot-image signing and
+    # UEFI key tooling on the phone itself -- re-signing a boot image and
+    # writing it to the inactive slot from within the OS is how bootloader
+    # updates work once fastboot is locked.
+    environment.systemPackages = lib.mkIf config.vanilla-mobile.verifiedBoot.enable [
+      self.packages.fairphone-fp5-verified-boot.avb-boot-sign
+      self.packages.fairphone-fp5-verified-boot.uboot-efi-keys
+    ];
 
     # Voice calls need q6voiced, which needs the modem's ALSA card and device
     # numbers. Read them off the phone once it boots:

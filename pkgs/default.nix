@@ -20,6 +20,9 @@ in
   libfprint-focaltech = callPackage ./libfprint { inherit (pkgs) libfprint; };
   pil-squasher = callPackage ./pil-squasher { };
 
+  # FP5-only verified-boot tooling (docs/verified-boot.md).
+  fairphone-fp5-verified-boot = recurseIntoAttrs (callPackage ./fairphone-fp5-verified-boot { });
+
   alsa-ucm-conf-sdm845 = callPackage ./alsa-ucm-conf-sdm845 { };
 
   bootmac = callPackage ./bootmac { };

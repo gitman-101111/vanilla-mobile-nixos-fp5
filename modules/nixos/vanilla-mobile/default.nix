@@ -20,6 +20,7 @@ in
     ./plymouth.nix
     ./power-management.nix
     ./uboot.nix
+    ./verified-boot.nix
     (import ./usb-gadget.nix self)
   ];
 
