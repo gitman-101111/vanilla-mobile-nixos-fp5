@@ -1,12 +1,22 @@
+# Built from marcusramberg/fp5-fingerprint-tools rather than vendored here, so
+# fixes to the tools land upstream and flow back by bumping the pin.
 {
   lib,
   stdenv,
+  fetchFromGitHub,
 }:
-stdenv.mkDerivation {
+stdenv.mkDerivation (finalAttrs: {
   pname = "ffsupplicant";
-  version = "0.1.0";
+  version = "0.1.0-unstable-2026-09-01";
 
-  src = ./.;
+  src = fetchFromGitHub {
+    owner = "marcusramberg";
+    repo = "fp5-fingerprint-tools";
+    rev = "d9320448e575c2e219b1100655d0465b09f58d92";
+    hash = "sha256-JWwvcnRp+bX3d6qdvM82p4E3O9UNTfZ89xUk89Qu/Yg=";
+  };
+
+  sourceRoot = "${finalAttrs.src.name}/ffsupplicant";
 
   dontConfigure = true;
 
@@ -52,8 +62,9 @@ stdenv.mkDerivation {
 
       Needs root, for /dev/teepriv0.
     '';
+    homepage = "https://github.com/marcusramberg/fp5-fingerprint-tools";
     license = lib.licenses.gpl2Only;
     platforms = lib.platforms.linux;
     mainProgram = "ffsupplicant";
   };
-}
+})

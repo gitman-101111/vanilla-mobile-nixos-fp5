@@ -31,6 +31,24 @@ libfprint.overrideAttrs (old: {
   # already newer than, and it does not apply.
   patches = [ ];
 
+  # This libfprint is cross-compiled for the phone from an x86 host and, once
+  # patched, is not in the binary cache, so it actually gets built here rather
+  # than substituted -- which trips a cross-build bug: at meson configure time
+  # tests/meson.build enumerates the virtual-driver tests by running
+  # unittest_inspector.py against them, and that imports the freshly built
+  # aarch64 libfprint typelib, which cannot load on the x86 build host, so
+  # meson aborts. Emptying just that one loop drops the virtual-driver test
+  # registrations while keeping everything the library itself needs from this
+  # subdir (the fpi-test-emulation.h header and the test-emulation helper lib,
+  # both generated earlier in the file). The dropped tests cover the virtual
+  # drivers, not the FocalTech driver this override carries. doInstallCheck is
+  # off too, so the C unit tests (which do build) are not run under emulation.
+  postPatch = (old.postPatch or "") + ''
+    substituteInPlace tests/meson.build \
+      --replace-fail "foreach vdtest: virtual_devices_tests" "foreach vdtest: []"
+  '';
+  doInstallCheck = false;
+
   # Built with `-Ddrivers=all` from nixpkgs, and the driver is not marked
   # optional, so it is included without any flag of its own.
 })
