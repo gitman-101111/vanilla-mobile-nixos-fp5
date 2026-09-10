@@ -58,33 +58,50 @@ in
       script = ''
         GADGET="/sys/kernel/config/usb_gadget/${cfg.gadgetName}"
 
-        mkdir $GADGET
+        # mkdir -p / guarded ln / bind-if-unbound: a failed run leaves the
+        # gadget tree half-created, and a restart must pick it up.
+        mkdir -p $GADGET
         # Set to vendor ID for "Linux Foundation".
         echo "0x1d6b" > $GADGET/idVendor
         # Set to product ID for "Multifunction Composite Gadget".
         echo "0x0104" > $GADGET/idProduct
 
         # Create English (0x409) strings directory.
-        mkdir $GADGET/strings/0x409
+        mkdir -p $GADGET/strings/0x409
         echo "${cfg.usbManufacturer}" > $GADGET/strings/0x409/manufacturer
         echo "${cfg.usbProduct}" > $GADGET/strings/0x409/product
         echo "${cfg.usbSerialNumber}" > $GADGET/strings/0x409/serialnumber
 
         # Create network function.
-        mkdir $GADGET/functions/ncm.usb0
+        mkdir -p $GADGET/functions/ncm.usb0
 
         # Create `c` configuration `1`.
-        mkdir $GADGET/configs/c.1
+        mkdir -p $GADGET/configs/c.1
         # Create `c.1` config's English (0x409) strings directory.
-        mkdir $GADGET/configs/c.1/strings/0x409
+        mkdir -p $GADGET/configs/c.1/strings/0x409
         echo "USB network" > $GADGET/configs/c.1/strings/0x409/configuration
 
         # Link the network instance to the configuration.
-        ln -s $GADGET/functions/ncm.usb0 $GADGET/configs/c.1/
+        [ -e $GADGET/configs/c.1/ncm.usb0 ] \
+          || ln -s $GADGET/functions/ncm.usb0 $GADGET/configs/c.1/
 
-        # Link the gadget instance to a USB Device Controller, activating the gadget.
-        udc=$(ls /sys/class/udc | head -1)
-        echo "$udc" > $GADGET/UDC
+        # Link the gadget instance to a USB Device Controller, activating the
+        # gadget. The UDC appears only once the controller and PHYs finish
+        # probing, which can be after this unit runs.
+        udc=
+        for _ in $(seq 1 30); do
+          udc=$(ls /sys/class/udc 2>/dev/null | head -1)
+          [ -n "$udc" ] && break
+          sleep 1
+        done
+        if [ -z "$udc" ]; then
+          echo "usb-gadget: no UDC appeared after 30s" >&2
+          exit 1
+        fi
+        # Writing to UDC while already bound returns EBUSY.
+        if [ -z "$(cat $GADGET/UDC 2>/dev/null)" ]; then
+          echo "$udc" > $GADGET/UDC
+        fi
       '';
 
       restartIfChanged = false;
