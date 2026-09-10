@@ -5,6 +5,107 @@ self: {
   ...
 }: let
   cfg = config.vanilla-mobile.soc.qcm6490;
+
+  # Conservative least-privilege baseline for this SoC's root daemons
+  # (docs/hardening.md, "Service sandboxing"). Every directive here is safe
+  # for daemons that talk to /dev, QMI/QRTR sockets and RPMB, and for the one
+  # that carries CAP_DAC_OVERRIDE and bind-mounts -- it deliberately avoids
+  # ProtectSystem, PrivateDevices, RestrictAddressFamilies, ProtectClock,
+  # ProtectKernelTunables, CapabilityBoundingSet and SystemCallFilter, any of
+  # which would break device access, the Qualcomm IPC sockets, the RTC writes
+  # or the ambient capability. mkDefault so a service's own needs still win.
+  # Tighter per-daemon profiles (address-family and syscall filters) are a
+  # follow-up that needs individual validation.
+  daemonHardening = lib.mapAttrs (_: lib.mkDefault) {
+    NoNewPrivileges = true;
+    ProtectHome = true;
+    ProtectControlGroups = true;
+    ProtectKernelModules = true;
+    RestrictSUIDSGID = true;
+    LockPersonality = true;
+    ProtectHostname = true;
+  };
+
+  # Stronger additions, layered on the baseline. All mkDefault, so a service's
+  # own plain serviceConfig (priority 100) still wins over any of these (1000)
+  # -- these only fill in where the service is silent. `sbxCommon` is the set
+  # that is safe for every daemon here; the per-tier bits add address-family,
+  # filesystem and device scoping tuned to what each daemon actually touches.
+  sbxCommon = lib.mapAttrs (_: lib.mkDefault) {
+    PrivateTmp = true;
+    ProtectClock = true;
+    ProtectKernelLogs = true;
+    RestrictNamespaces = true;
+    RestrictRealtime = true;
+    ProtectProc = "invisible";
+    ProcSubset = "pid";
+    SystemCallArchitectures = "native";
+    SystemCallFilter = [ "@system-service" ];
+    UMask = "0077";
+    # None of these daemons speak IP -- they use QRTR, unix sockets or just
+    # devices -- so deny all IP outright.
+    IPAddressDeny = "any";
+  };
+  # Qualcomm IPC daemons: QMI/QRTR over AF_QIPCRTR, plus unix and netlink.
+  # They talk to remote processors over sockets, not /sys or W+X memory.
+  sbxQmi =
+    daemonHardening
+    // sbxCommon
+    // (lib.mapAttrs (_: lib.mkDefault) {
+      ProtectSystem = "strict";
+      ProtectKernelTunables = true;
+      MemoryDenyWriteExecute = true;
+      RestrictAddressFamilies = [
+        "AF_UNIX"
+        "AF_NETLINK"
+        "AF_QIPCRTR"
+      ];
+    });
+  # Pure D-Bus/compute helpers with no device, IP or capability needs.
+  sbxLocked =
+    daemonHardening
+    // sbxCommon
+    // (lib.mapAttrs (_: lib.mkDefault) {
+      ProtectSystem = "strict";
+      ProtectKernelTunables = true;
+      PrivateDevices = true;
+      MemoryDenyWriteExecute = true;
+      CapabilityBoundingSet = [ "" ];
+      RestrictAddressFamilies = [ "AF_UNIX" ];
+    });
+  # hexagonrpcd: the sensor DSP daemon. It drives fastrpc devices, talks QRTR,
+  # and already carries a minimal CAP_DAC_OVERRIDE-only bounding set -- so this
+  # omits the options that would break those (ProtectSystem, PrivateDevices,
+  # RestrictAddressFamilies, RestrictNamespaces). Its registry is staged by
+  # plain file copies in a "+" ExecStartPre (which runs outside this sandbox),
+  # so no mount syscalls are needed in the allow-set.
+  sbxSensor =
+    daemonHardening
+    // (lib.mapAttrs (_: lib.mkDefault) {
+      PrivateTmp = true;
+      ProtectClock = true;
+      ProtectKernelLogs = true;
+      RestrictRealtime = true;
+      ProtectProc = "invisible";
+      ProcSubset = "pid";
+      SystemCallArchitectures = "native";
+      SystemCallFilter = [ "@system-service" ];
+      UMask = "0077";
+      IPAddressDeny = "any";
+    });
+  # TEE clients: load/drive the focal32 trusted app through /dev/teepriv0
+  # (needs CAP_SYS_ADMIN, so caps are left alone) and mmap shared buffers for
+  # it (so no MemoryDenyWriteExecute). No /sys writes, so kernel tunables are
+  # protected; the supplicant also needs the RPMB bsg node, hence no
+  # PrivateDevices.
+  sbxTee =
+    daemonHardening
+    // sbxCommon
+    // (lib.mapAttrs (_: lib.mkDefault) {
+      ProtectSystem = "strict";
+      ProtectKernelTunables = true;
+      RestrictAddressFamilies = [ "AF_UNIX" ];
+    });
 in {
   imports = [
     (import ./fairphone-fp5.nix self)
@@ -51,6 +152,21 @@ in {
         };
 
         vanilla-mobile.enable = true;
+
+        # Vendor /persist partition (Android layout, no repartitioning). Both
+        # the modem DSP (rmtfs, tqftpserv) and the sensor stack read/write it,
+        # so it is mounted unconditionally here rather than gated on any one
+        # subsystem -- gating it on sensors alone left tqftpserv failing when
+        # sensors were disabled. /persist's root is owned by the Android
+        # "system" gid 1000; naming that group lets a member list it without
+        # root (add users to it from the host config).
+        fileSystems."/persist" = {
+          device = "/dev/disk/by-partlabel/persist";
+          fsType = "ext4";
+          options = ["nofail"];
+        };
+        users.groups.persist.gid = lib.mkDefault 1000;
+
 
         nixpkgs.hostPlatform = "aarch64-linux";
 
@@ -172,11 +288,35 @@ in {
         systemd.tmpfiles.rules = [
           "L+ /readwrite - - - - /persist"
         ];
-        # Publishes the DSP protection-domain maps. Without it a DSP's root PD
-        # still answers -- sensors can be discovered and their attributes read
-        # -- while anything in a service PD never produces data.
-        services.pd-mapper.enable = true;
+        # usb-moded detects the cable via a power-supply node, defaulting to
+        # /sys/class/power_supply/usb; on this SoC (pmic_glink battmgr) the
+        # node is qcom-battmgr-usb. Without this it never sees a connection
+        # and refuses every cable-gated mode ("undefined" mode).
+        services.usb-moded.settings.udev.path = lib.mkDefault "/sys/class/power_supply/qcom-battmgr-usb";
+
+        # PD maps are served by the in-kernel qcom_pd_mapper (built into the
+        # FP5 kernel: spawned by the remoteproc driver, so it answers before
+        # any DSP performs its service-registry lookup). No userspace
+        # pd-mapper: two mappers crash q6afe probe into a boot loop, and the
+        # daemon cannot win the lookup ordering anyway (see pd-mapper.nix).
+        # A DSP that misses the lookup registers no service PDs for the whole
+        # boot: no wifi adapter, no battery reporting, no audio, no sensor
+        # data.
         services.msm-modem-uim-selection.enable = true;
+
+        # The modem firmware's init intermittently stalls until its own
+        # watchdog reboots it; a QMI attempt against the stalled modem exits
+        # nonzero. Retry past the recovery instead of staying failed all boot
+        # (RemainAfterExit off: a oneshot is only restartable without it).
+        systemd.services.msm-modem-uim-selection = {
+          startLimitIntervalSec = 600;
+          startLimitBurst = 5;
+          serviceConfig = {
+            RemainAfterExit = lib.mkForce false;
+            Restart = "on-failure";
+            RestartSec = "20s";
+          };
+        };
 
         networking.modemmanager.enable = true;
 
@@ -185,7 +325,10 @@ in {
         # wedging ModemManager until reboot. It reaches the modem over QMI/QRTR
         # anyway, so dropping the AT ports removes the trigger, not the
         # transport.
-        boot.blacklistedKernelModules = ["rpmsg_wwan_ctrl"];
+        #
+        boot.blacklistedKernelModules = [
+          "rpmsg_wwan_ctrl"
+        ];
 
         # GNSS reaches the OS through ModemManager's GPS. geoclue exposes it to
         # the desktop (GNOME location services); enableModemGPS is the GPS
@@ -437,19 +580,6 @@ in {
         services.hexagonrpcd.adsp-sensorspd.enable = true;
         hardware.sensor.iio.enable = true;
 
-        # Vendor partition holding the factory sensor registry; already in the
-        # Android layout, so this needs no repartitioning.
-        fileSystems."/persist" = {
-          device = "/dev/disk/by-partlabel/persist";
-          fsType = "ext4";
-          options = ["nofail"];
-        };
-
-        # /persist's root is owned by the Android "system" gid 1000, which has
-        # no NixOS group. Name it so a member can list /persist without root;
-        # add users to it from the host config.
-        users.groups.persist.gid = lib.mkDefault 1000;
-
         # ssc-support is a meson feature; left at `auto` it silently drops
         # sensors. The patch keeps the daemon alive when no sensor exists at
         # startup -- SSC sensors only appear once hexagonrpcd has brought the
@@ -479,40 +609,66 @@ in {
         # private root holding the hexagonfs tree. /persist/sensors is bind
         # mounted rather than copied: the firmware writes sns_reg_version.
         systemd.services.hexagonrpcd-adsp-sensorspd = {
-          # Bound the upstream Restart=always: each failed attach can leak one
-          # of the DSP's ~22 protection-domain slots, and exhausting them
-          # wedges the DSP until it is cycled. Stop well short.
+          # Bound the upstream Restart=always: each failed attach crashes the
+          # ADSP, and unbounded retries would exhaust its ~22 PD slots. Burst
+          # must absorb an ADSP recovery (a modem watchdog reboot can assert
+          # the ADSP and kill a healthy sensor session), which takes a few
+          # spaced tries to reattach after.
           startLimitIntervalSec = 600;
-          startLimitBurst = 8;
-          # pd-mapper has to have published the ADSP's protection-domain map
-          # before the sensor PD can be reached, or the daemon comes up
-          # against a subsystem whose service PDs are not addressable yet.
+          startLimitBurst = 5;
           requires = [
             "persist.mount"
-            "pd-mapper.service"
           ];
+          wants = [ "tqftpserv.service" ];
           after = [
             "persist.mount"
-            "pd-mapper.service"
+            "tqftpserv.service"
           ];
           serviceConfig = {
             RuntimeDirectory = "hexagon-adsp";
-            # The registry carries Android ownership (uid 1000) and its inner
-            # directory is 0700, so resolving the registry/registry/../ paths
-            # the firmware asks for means traversing a directory fastrpc
-            # cannot enter. Group permissions cannot grant this (0700), and
-            # chowning would rewrite vendor data, so the daemon keeps its own
-            # uid and is given only the capability to bypass the check.
+            # Spaced so the ADSP recovers between retries.
+            RestartSec = "20s";
+            # Only capability the daemon needs (fastrpc + the root-owned
+            # registry tree).
             AmbientCapabilities = ["CAP_DAC_OVERRIDE"];
             CapabilityBoundingSet = ["CAP_DAC_OVERRIDE"];
             ExecStartPre = [
+              # The sensor PD is attachable only after the ADSP boots its
+              # firmware and registers its PDs (~2s after `running`; no
+              # positive signal to poll, hence the settle). Both ExecStartPre
+              # run "+" (host namespace, privileged).
+              ("+"
+                + pkgs.writeShellScript "hexagonrpcd-adsp-sensorspd-wait" ''
+                  set -eu
+                  for _ in $(seq 1 60); do
+                    for rp in /sys/class/remoteproc/remoteproc*; do
+                      if [ "$(cat "$rp/name" 2>/dev/null)" = adsp ] \
+                        && [ "$(cat "$rp/state" 2>/dev/null)" = running ]; then
+                        sleep 5
+                        exit 0
+                      fi
+                    done
+                    sleep 1
+                  done
+                '')
               ("+"
                 + pkgs.writeShellScript "hexagonrpcd-adsp-sensorspd-root" ''
                   set -eu
                   root=/run/hexagon-adsp
-                  ${pkgs.util-linux}/bin/umount -l "$root/sensors/registry" 2>/dev/null || true
-                  ${pkgs.util-linux}/bin/umount -l "$root/mnt/vendor/persist/sensors" 2>/dev/null || true
                   cp -r ${config.vanilla-mobile.deviceInfo.firmware}/lib/firmware/qcom/*/*/hexagonfs/. "$root/"
+                  # The DSP reads the factory registry at the nested
+                  # sensors/registry/registry/<item> (the /persist layout; the
+                  # firmware tree ships it flat, and a missing nested dir
+                  # asserts SNS_REG_TASK and crashes the ADSP). Copied, not
+                  # bind-mounted, and into the existing dir rather than
+                  # rm+recreate: only files written into the RuntimeDirectory
+                  # tmpfs are reliably visible in the sandboxed daemon's mount
+                  # namespace. Cal write-back is therefore per-boot; chmod so
+                  # the DSP can write it.
+                  mkdir -p "$root/sensors/registry/registry"
+                  cp -r /persist/sensors/registry/registry/. "$root/sensors/registry/registry/"
+                  cp /persist/sensors/registry/sns_reg_version "$root/sensors/registry/sns_reg_version" 2>/dev/null || true
+                  chmod -R u+w "$root/sensors/registry"
                   mkdir -p "$root/sys/devices/soc0"
                   for f in family machine revision soc_id hw_platform \
                            platform_subtype platform_subtype_id platform_version; do
@@ -524,37 +680,29 @@ in {
                   mkdir -p "$root/vendor/etc/sensors"
                   cp ${config.vanilla-mobile.deviceInfo.firmware}/lib/firmware/qcom/*/*/hexagonfs/sensors/sns_reg.conf \
                     "$root/vendor/etc/sensors/sns_reg_config"
-                  # The DSP-visible registry directory is the REAL one on
-                  # /persist: <dir>/registry/<item> is the factory registry the
-                  # firmware reads, and with hexagonrpcd's write support it
-                  # writes runtime items back next to it (temp.json renamed
-                  # over the target, sns_reg_version) exactly as on Android.
-                  # The store copy staged by the cp above only seeds the
-                  # mountpoint; it is shadowed by the bind mount.
-                  ${pkgs.util-linux}/bin/mount --bind /persist/sensors/registry "$root/sensors/registry"
                 '')
             ];
             ExecStart = [
               ""
               "${config.services.hexagonrpcd.package}/bin/hexagonrpcd -f /dev/fastrpc-adsp -d adsp -R /run/hexagon-adsp -s"
             ];
-            ExecStopPost = [
-              "+-${pkgs.util-linux}/bin/umount -l /run/hexagon-adsp/sensors/registry"
-            ];
           };
         };
 
         # Bound to the daemon rather than started independently: without the
-        # ADSP there is nothing for it to find.
-        # SSC sensors are not kernel IIO devices; iio-sensor-proxy reaches
-        # them over libssc, so nothing hotplugs to activate it on demand.
+        # ADSP there is nothing for it to find. SSC sensors are not kernel IIO
+        # devices; iio-sensor-proxy reaches them over libssc, so nothing
+        # hotplugs to activate it on demand.
         systemd.services.iio-sensor-proxy = {
           wantedBy = ["multi-user.target"];
           bindsTo = ["hexagonrpcd-adsp-sensorspd.service"];
           after = ["hexagonrpcd-adsp-sensorspd.service"];
           serviceConfig = {
             Restart = "always";
-            RestartSec = "5s";
+            # Longer than the daemon's own RestartSec: bindsTo implies
+            # Requires, so a faster iio restart would re-start the crashed
+            # daemon early and burn its start-limit burst.
+            RestartSec = "25s";
             RestrictAddressFamilies = ["AF_UNIX" "AF_NETLINK" "AF_QIPCRTR"];
           };
         };
@@ -580,6 +728,54 @@ in {
           };
         };
       })
+
+      # Least-privilege sandboxing for this SoC's root daemons. Gated on the
+      # same feature flags that define each service, so no phantom units are
+      # created. See the daemonHardening baseline above.
+      (lib.mkIf cfg.modem.enable {
+        systemd.services.rmtfs.serviceConfig = sbxQmi;
+        # tqftpserv persists DSP runtime state under /persist.
+        systemd.services.tqftpserv.serviceConfig = sbxQmi // {
+          ProtectSystem = lib.mkDefault "strict";
+          ReadWritePaths = lib.mkDefault [ "/persist" ];
+        };
+        # uim-selection needs a capability for its slot-selection QMI path (it
+        # fails outright with an empty bounding set), so it keeps the default
+        # caps.
+        systemd.services.msm-modem-uim-selection.serviceConfig = sbxQmi;
+        # Writes /sys/class/remoteproc/*/state at shutdown, so no
+        # ProtectKernelTunables; ProtectSystem=strict still leaves /sys rw.
+        systemd.services.qcom-modem-shutdown.serviceConfig =
+          daemonHardening
+          // sbxCommon
+          // {
+            ProtectSystem = lib.mkDefault "strict";
+            RestrictAddressFamilies = lib.mkDefault [ "AF_UNIX" ];
+          };
+      })
+      (lib.mkIf cfg.sensors.enable {
+        systemd.services.hexagonrpcd-adsp-sensorspd.serviceConfig = sbxSensor;
+      })
+      (lib.mkIf cfg.fingerprint.enable {
+        # The supplicant needs the RPMB bsg node as well as /dev/teepriv0, so
+        # it keeps device access (no PrivateDevices).
+        systemd.services.ffsupplicant.serviceConfig = sbxTee;
+        systemd.services.focal32-load.serviceConfig = sbxTee;
+      })
+      (lib.mkIf cfg.nfc.enable {
+        systemd.services.neard-poll.serviceConfig = sbxLocked;
+      })
+      {
+        # qbootctl writes the A/B control block on a raw partition (/dev), so
+        # no PrivateDevices; otherwise fully locked.
+        systemd.services.qbootctl-mark-successful.serviceConfig =
+          daemonHardening
+          // sbxCommon
+          // {
+            ProtectSystem = lib.mkDefault "strict";
+            RestrictAddressFamilies = lib.mkDefault [ "AF_UNIX" ];
+          };
+      }
     ]
   );
 }

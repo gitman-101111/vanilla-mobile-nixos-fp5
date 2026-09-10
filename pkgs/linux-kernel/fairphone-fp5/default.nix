@@ -76,7 +76,7 @@ kernel.override {
     # success since the iio_multiply_value() refactor, but adc_tm5_get_temp
     # still expects the old convention of returning IIO_VAL_INT. The raw IIO
     # channels read fine; only this check fails. Still broken in mainline
-    # master as of 2026-08-11 -- worth reporting upstream.
+    # master as of 7.1.5 -- worth reporting upstream.
     {
       name = "adc-tm5-processed-read";
       patch = ./adc-tm5-processed-read.patch;
@@ -133,7 +133,7 @@ kernel.override {
     hostPlatform.linux-kernel.extraConfig = "";
   };
 
-  structuredExtraConfig = with lib.kernel; {
+  structuredExtraConfig = (with lib.kernel; {
     # Rear camera, from the out-of-tree driver in the patch above.
     VIDEO_IMX858 = module;
 
@@ -173,5 +173,74 @@ kernel.override {
     CRYPTO_CRYPTD = module;
     CRYPTO_USER_API_SKCIPHER = module;
     CRYPTO_LRW = module;
-  };
+
+    # In-kernel PD mapper (the port's only mapper), built in rather than =m:
+    # as a module its autoload races DSP autoboot, and a DSP whose
+    # service-registry lookup misses it registers no service PDs all boot (no
+    # audio, battery reporting, Wi-Fi adapter or sensor data). QRTR/QMI/PDR
+    # are its Kconfig dependencies.
+    QRTR = lib.mkForce yes;
+    QCOM_QMI_HELPERS = lib.mkForce yes;
+    QCOM_PDR_MSG = lib.mkForce yes;
+    QCOM_PD_MAPPER = lib.mkForce yes;
+  })
+  # --- Hardening (KSPP-recommended), see docs/hardening.md ----------------
+  # Compile-time counterparts to the runtime hardening in the
+  # vanilla-mobile.hardening module. Kept here because this kernel is
+  # custom-built, which is exactly where these belong. mkForce'd as a group:
+  # nixpkgs' common-config.nix pins several of these (e.g. MODULE_SIG=n), so
+  # each needs to win over that baseline; a force to the same value is a
+  # no-op.
+  // lib.mapAttrs (lib.const lib.mkForce) (with lib.kernel; {
+    # Self-protection: fortified string ops, strong stack protector, full
+    # KASLR (base + module region), heap/page-allocator randomisation, and
+    # zero-on-alloc/free compiled on by default (not just via cmdline).
+    FORTIFY_SOURCE = yes;
+    STACKPROTECTOR = yes;
+    STACKPROTECTOR_STRONG = yes;
+    RANDOMIZE_BASE = yes;
+    RANDOMIZE_MODULE_REGION_FULL = yes;
+    SLAB_FREELIST_RANDOM = yes;
+    SLAB_FREELIST_HARDENED = yes;
+    SHUFFLE_PAGE_ALLOCATOR = yes;
+    INIT_ON_ALLOC_DEFAULT_ON = yes;
+    INIT_ON_FREE_DEFAULT_ON = yes;
+
+    # Read-only kernel/module text and data; panic rather than continue on
+    # detected memory corruption; bounds-check copies to/from userspace;
+    # catch stack overruns.
+    STRICT_KERNEL_RWX = yes;
+    STRICT_MODULE_RWX = yes;
+    DEBUG_WX = yes;
+    BUG_ON_DATA_CORRUPTION = yes;
+    HARDENED_USERCOPY = yes;
+    SCHED_STACK_END_CHECK = yes;
+    VMAP_STACK = yes;
+
+    # Close classic kernel-memory disclosure/patch surfaces. nixpkgs already
+    # sets STRICT_DEVMEM/IO_STRICT_DEVMEM (restricting /dev/mem to non-RAM);
+    # lockdown below blocks it entirely, so /dev/mem is not removed outright
+    # here (that would collide with those baseline options). PROC_KCORE and
+    # legacy PTYs are dropped as unneeded disclosure/attack surface.
+    PROC_KCORE = no;
+    LEGACY_PTYS = no;
+    SECURITY_DMESG_RESTRICT = yes;
+
+    # Module signing: every in-tree module is signed with a build-time key
+    # (MODULE_SIG_ALL) and unsigned modules are refused (MODULE_SIG_FORCE),
+    # covering modules loaded from the mutable rootfs that the signed UKI does
+    # not already cover.
+    MODULE_SIG = yes;
+    MODULE_SIG_ALL = yes;
+    MODULE_SIG_FORCE = yes;
+    MODULE_SIG_SHA512 = yes;
+
+    # Lockdown LSM in confidentiality mode, forced on from early boot: blocks
+    # even root from reading kernel memory, loading unsigned modules and kexec.
+    # The lsm= cmdline must list "lockdown" for it to initialise (set in the
+    # hardening module's kernelParams).
+    SECURITY_LOCKDOWN_LSM = yes;
+    SECURITY_LOCKDOWN_LSM_EARLY = yes;
+    LOCK_DOWN_KERNEL_FORCE_CONFIDENTIALITY = yes;
+  });
 }

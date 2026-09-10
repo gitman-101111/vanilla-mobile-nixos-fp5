@@ -15,6 +15,7 @@ in
     ./cache.nix
     ./deviceInfo.nix
     (import ./disko.nix self)
+    ./hardening.nix
     (import ./installer.nix self)
     (import ./mobile-config-firefox.nix self)
     ./plymouth.nix

@@ -1,3 +1,8 @@
+# Userspace Qualcomm protection-domain mapper. Conflicts with kernels that
+# compile in qcom_pd_mapper (asserted below). Caveat: the daemon discovers
+# maps by walking /sys/class/remoteproc, so its first start fails until the
+# remoteprocs exist and Restart=always carries it -- a DSP whose
+# service-registry lookup lands in that window registers no service PDs.
 self:
 {
   lib,
@@ -15,6 +20,25 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # kernel.config does not reflect structuredExtraConfig; the requested
+    # values are in configfile.structuredConfig.
+    assertions = [
+      {
+        assertion =
+          (lib.attrByPath
+            [ "configfile" "structuredConfig" "QCOM_PD_MAPPER" "tristate" ]
+            null
+            config.boot.kernelPackages.kernel)
+          != "y";
+        message = ''
+          services.pd-mapper conflicts with this kernel: it compiles in the
+          in-kernel PD mapper (QCOM_PD_MAPPER=y), and two mappers publishing
+          at once crash the ADSP audio probe into a boot loop. Disable
+          services.pd-mapper; the built-in mapper already serves the maps.
+        '';
+      }
+    ];
+
     systemd.services.pd-mapper = {
       description = "Qualcomm protection domain mapper";
       wantedBy = [ "multi-user.target" ];
