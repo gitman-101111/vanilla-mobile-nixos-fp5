@@ -28,7 +28,6 @@ in
   hyprgrass = callPackage ./hyprgrass { inherit (pkgs.hyprlandPlugins) hyprgrass; };
   iio-hyprland = callPackage ./iio-hyprland { };
   mobile-config-firefox = callPackage ./mobile-config-firefox { };
-  msm-modem = callPackage ./msm-modem { };
   pd-mapper = callPackage ./pd-mapper { };
   ssu-sysinfo = callPackage ./ssu-sysinfo { };
   swclock-offset = callPackage ./swclock-offset { };
