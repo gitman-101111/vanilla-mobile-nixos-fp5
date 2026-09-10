@@ -36,7 +36,7 @@ Tested Devices:
 - [Xiaomi POCO F1 Tianma (xiaomi-beryllium)](docs/xiaomi-beryllium.md)
   - SIM card currently untested.
 - [Fairphone 5 (fairphone-fp5)](docs/fairphone-fp5.md)
-  - SIM card currently untested.
+  - Modem registers; voice calls need q6voiced wiring (see the hardware table).
   - Main camera driver needed.
 
 Implemented but untested:
@@ -56,6 +56,12 @@ Implemented but untested:
 Depending on your tastes, it's possible to keep your mobile config 95% identical
 to your desktop config or completely custom. See [docs/software-info.md](./docs/software-info.md)
 for specific details and instructions.
+
+For security hardening (kernel hardening, module signing + lockdown,
+hardened_malloc, auto-reboot when left locked, MAC randomization), see
+[docs/hardening.md](./docs/hardening.md). On the Fairphone 5 the bootloader
+can additionally be relocked on your own verified-boot keys — see
+[docs/verified-boot.md](./docs/verified-boot.md).
 
 ## Installation Instructions
 
