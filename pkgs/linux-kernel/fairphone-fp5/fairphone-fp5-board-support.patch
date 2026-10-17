@@ -10,10 +10,9 @@ board-level pieces are here.
 The two .dtsi files are new files and use label references only, so they do
 not depend on line numbers and dtc fails the build if a label they reference
 is renamed or removed. Only three small hunks touch existing files.
-
 diff -Naur a/arch/arm64/boot/dts/qcom/fp5-audio.dtsi b/arch/arm64/boot/dts/qcom/fp5-audio.dtsi
 --- a/arch/arm64/boot/dts/qcom/fp5-audio.dtsi	1969-12-31 17:00:00.000000000 -0700
-+++ b/arch/arm64/boot/dts/qcom/fp5-audio.dtsi	2026-08-07 17:52:58.123853594 -0600
++++ b/arch/arm64/boot/dts/qcom/fp5-audio.dtsi	2026-10-17 11:53:31.673095662 -0600
 @@ -0,0 +1,315 @@
 +// SPDX-License-Identifier: BSD-3-Clause
 +/*
@@ -332,14 +331,18 @@ diff -Naur a/arch/arm64/boot/dts/qcom/fp5-audio.dtsi b/arch/arm64/boot/dts/qcom/
 +};
 diff -Naur a/arch/arm64/boot/dts/qcom/fp5-camera.dtsi b/arch/arm64/boot/dts/qcom/fp5-camera.dtsi
 --- a/arch/arm64/boot/dts/qcom/fp5-camera.dtsi	1969-12-31 17:00:00.000000000 -0700
-+++ b/arch/arm64/boot/dts/qcom/fp5-camera.dtsi	2026-08-07 17:52:58.123893893 -0600
-@@ -0,0 +1,65 @@
++++ b/arch/arm64/boot/dts/qcom/fp5-camera.dtsi	2026-10-17 11:53:31.673095662 -0600
+@@ -0,0 +1,69 @@
 +// SPDX-License-Identifier: BSD-3-Clause
 +/*
 + * Fairphone 5 rear camera (Sony IMX858), from sc7280-mainline's
 + * qcm6490-fairphone-fp5.dts. Needs the out-of-tree imx858 driver. Mainline
-+ * already has the dw9800k actuator and the front camera wiring, and leaves a
-+ * comment placeholder where this sensor node goes.
++ * carries the front camera wiring and leaves a comment placeholder where this
++ * sensor node goes.
++ *
++ * It also carries the actuator *node* -- camera_imx858_dw9800k, compatible
++ * "dongwoon,dw9800k" -- but no driver matches that compatible, so the lens
++ * never binds and focus is fixed. The sensor itself probes regardless.
 + *
 + * Label references only, so this does not depend on line numbers. A renamed
 + * or dropped label fails in dtc rather than silently losing the camera.
@@ -400,8 +403,8 @@ diff -Naur a/arch/arm64/boot/dts/qcom/fp5-camera.dtsi b/arch/arm64/boot/dts/qcom
 +	};
 +};
 diff -Naur a/arch/arm64/boot/dts/qcom/qcm6490-fairphone-fp5.dts b/arch/arm64/boot/dts/qcom/qcm6490-fairphone-fp5.dts
---- a/arch/arm64/boot/dts/qcom/qcm6490-fairphone-fp5.dts	2026-07-24 08:21:27.000000000 -0600
-+++ b/arch/arm64/boot/dts/qcom/qcm6490-fairphone-fp5.dts	2026-08-07 17:52:58.121049383 -0600
+--- a/arch/arm64/boot/dts/qcom/qcm6490-fairphone-fp5.dts	2026-10-17 11:53:31.657095759 -0600
++++ b/arch/arm64/boot/dts/qcom/qcm6490-fairphone-fp5.dts	2026-10-17 11:53:31.668095693 -0600
 @@ -1521,3 +1521,6 @@
  	qcom,calibration-variant = "Fairphone_5";
  	status = "okay";
@@ -411,7 +414,7 @@ diff -Naur a/arch/arm64/boot/dts/qcom/qcm6490-fairphone-fp5.dts b/arch/arm64/boo
 +#include "fp5-camera.dtsi"
 diff -Naur a/drivers/media/i2c/imx858.c b/drivers/media/i2c/imx858.c
 --- a/drivers/media/i2c/imx858.c	1969-12-31 17:00:00.000000000 -0700
-+++ b/drivers/media/i2c/imx858.c	2026-08-07 17:52:58.122754009 -0600
++++ b/drivers/media/i2c/imx858.c	2026-10-17 11:53:31.670095681 -0600
 @@ -0,0 +1,1320 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
@@ -1734,8 +1737,8 @@ diff -Naur a/drivers/media/i2c/imx858.c b/drivers/media/i2c/imx858.c
 +MODULE_DESCRIPTION("Sony IMX858 sensor driver");
 +MODULE_LICENSE("GPL");
 diff -Naur a/drivers/media/i2c/Kconfig b/drivers/media/i2c/Kconfig
---- a/drivers/media/i2c/Kconfig	2026-07-24 08:21:27.000000000 -0600
-+++ b/drivers/media/i2c/Kconfig	2026-08-07 17:52:58.120049368 -0600
+--- a/drivers/media/i2c/Kconfig	2026-10-17 11:53:31.631095915 -0600
++++ b/drivers/media/i2c/Kconfig	2026-10-17 11:53:31.666095704 -0600
 @@ -266,6 +266,14 @@
  	  To compile this driver as a module, choose M here: the
  	  module will be called imx355.
@@ -1750,12 +1753,12 @@ diff -Naur a/drivers/media/i2c/Kconfig b/drivers/media/i2c/Kconfig
 +
  config VIDEO_IMX412
  	tristate "Sony IMX412 sensor support"
- 	depends on OF_GPIO
+ 	depends on OF
 diff -Naur a/drivers/media/i2c/Makefile b/drivers/media/i2c/Makefile
---- a/drivers/media/i2c/Makefile	2026-07-24 08:21:27.000000000 -0600
-+++ b/drivers/media/i2c/Makefile	2026-08-07 17:52:58.121049383 -0600
-@@ -171,3 +171,4 @@
- obj-$(CONFIG_VIDEO_VPX3220) += vpx3220.o
+--- a/drivers/media/i2c/Makefile	2026-10-17 11:53:31.644095837 -0600
++++ b/drivers/media/i2c/Makefile	2026-10-17 11:53:31.667095698 -0600
+@@ -172,3 +172,4 @@
  obj-$(CONFIG_VIDEO_WM8739) += wm8739.o
  obj-$(CONFIG_VIDEO_WM8775) += wm8775.o
+ obj-$(CONFIG_VIDEO_INTEL_CVS) += cvs/
 +obj-$(CONFIG_VIDEO_IMX858) += imx858.o

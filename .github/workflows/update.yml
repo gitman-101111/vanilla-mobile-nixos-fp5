@@ -1,0 +1,132 @@
+name: update
+on:
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Weekly: bump the flake inputs and check whether the Fairphone 5 kernel
+# still builds its config on the new nixpkgs. The kernel tracks
+# linux_latest, while the patch series in pkgs/linux-kernel/fairphone-fp5/
+# was validated on one release; a bump that breaks a patch (or removes a
+# Kconfig symbol the config sets) should be visible in the PR before anyone
+# spends hours building it on a phone. An arm64 runner is used so the real
+# aarch64 derivations evaluate and the configfile derivation builds natively.
+jobs:
+  update:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v23
+
+      - id: lock
+        run: |
+          kernel='.#packages.aarch64-linux."linuxKernels/linux_fairphone_fp5"'
+          kver() { nix eval --raw "$kernel.version"; }
+          before=$(kver)
+          nix flake update
+          after=$(kver)
+          echo "kernel_before=$before" >> "$GITHUB_OUTPUT"
+          echo "kernel_after=$after"   >> "$GITHUB_OUTPUT"
+          if git diff --quiet; then echo "changed=false" >> "$GITHUB_OUTPUT"; else echo "changed=true" >> "$GITHUB_OUTPUT"; fi
+          {
+            echo 'summary<<EOF'
+            git --no-pager diff --stat
+            echo
+            nix flake metadata --json | jq -r '.locks.nodes | to_entries[] | select(.value.locked != null) | "\(.key): \(.value.locked.rev // .value.locked.url) (\(.value.locked.lastModified | todate))"'
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      # Canary 1: apply the kernel's patch list, in order, to the new source
+      # the way nixpkgs does (`patch -p1`, default fuzz). The list is taken
+      # from the derivation itself, so version-gated entries (a backport that
+      # drops itself once the base has it) are honoured. Fuzz is reported as a warning: it
+      # applied, but check that the hunk landed where it should.
+      - name: Kernel patch canary
+        id: canary
+        if: steps.lock.outputs.changed == 'true'
+        run: |
+          kernel='.#packages.aarch64-linux."linuxKernels/linux_fairphone_fp5"'
+          # nixpkgs' own linux_latest tarball is the fork's source; fetching it
+          # for the runner's architecture keeps this step runner-independent.
+          src=$(nix build --inputs-from . --no-link --print-out-paths 'nixpkgs#linux_latest.src')
+          mkdir -p /tmp/k && tar -xf "$src" -C /tmp/k --strip-components=1
+          ok=0; total=0; failed=""; fuzzy=""
+          for p in $(nix eval --raw "$kernel.patches" --apply 'ps: builtins.concatStringsSep "\n" ps'); do
+            total=$((total + 1))
+            out=$(cd /tmp/k && patch -p1 -N --no-backup-if-mismatch < "$p" 2>&1) || true
+            if echo "$out" | grep -qE 'FAILED|can.t find file|hunks? ignored'; then
+              failed="$failed- $(basename "$p")"$'\n'"  $(echo "$out" | grep -m1 -E 'FAILED|can.t find file|ignored')"$'\n'
+            else
+              ok=$((ok + 1))
+              if echo "$out" | grep -q 'fuzz'; then
+                fuzzy="$fuzzy- $(basename "$p"): $(echo "$out" | grep -c fuzz) hunk(s) with fuzz"$'\n'
+              fi
+            fi
+          done
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          echo "total=$total" >> "$GITHUB_OUTPUT"
+          {
+            echo 'report<<EOF'
+            if [ -z "$failed" ]; then
+              echo "all $total patches apply to ${{ steps.lock.outputs.kernel_after }}"
+            else
+              echo "$ok/$total patches apply to ${{ steps.lock.outputs.kernel_after }}; failing:"
+              printf '%s' "$failed"
+            fi
+            if [ -n "$fuzzy" ]; then
+              echo "applied with fuzz (verify placement):"
+              printf '%s' "$fuzzy"
+            fi
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      # Canary 2: generate the kernel config on the new source. nixpkgs
+      # fails this derivation when an option the config sets no longer
+      # exists ("unused option") or cannot take the requested value, which
+      # is how a renamed ARCH_*/driver symbol or a changed nixpkgs
+      # common-config shows up. Minutes, not hours, on this runner.
+      - name: Kernel config canary
+        id: config
+        if: steps.lock.outputs.changed == 'true'
+        run: |
+          kernel='.#packages.aarch64-linux."linuxKernels/linux_fairphone_fp5-configfile"'
+          if [ "$(uname -m)" != "aarch64" ] && ! nix config show extra-platforms 2>/dev/null | grep -q aarch64-linux; then
+            echo "report=skipped: needs an arm64 runner (or aarch64 emulation in Nix) to generate the aarch64 config" >> "$GITHUB_OUTPUT"
+            echo "ok=skipped" >> "$GITHUB_OUTPUT"
+          elif nix build --no-link -L "$kernel" 2>/tmp/config.err; then
+            echo "report=config generates cleanly on ${{ steps.lock.outputs.kernel_after }}" >> "$GITHUB_OUTPUT"
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo 'report<<EOF'
+              echo "config generation FAILS on ${{ steps.lock.outputs.kernel_after }}:"
+              grep -E 'error: (unused option|option not set correctly)|error:' /tmp/config.err | sed 's/^linux-config> //' | sort -u | head -40
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.lock.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          branch: update/inputs
+          delete-branch: true
+          commit-message: "flake: update inputs (kernel ${{ steps.lock.outputs.kernel_after }})"
+          title: "flake: update inputs (kernel ${{ steps.lock.outputs.kernel_after }}${{ (steps.canary.outputs.ok != steps.canary.outputs.total || steps.config.outputs.ok == 'false') && ' — KERNEL CANARY FAILS' || '' }})"
+          body: |
+            Weekly input refresh.
+
+            - Kernel (nixpkgs `linux_latest`): **${{ steps.lock.outputs.kernel_before }} → ${{ steps.lock.outputs.kernel_after }}**
+            - Patch canary: ${{ steps.canary.outputs.report }}
+            - Config canary: ${{ steps.config.outputs.report }}
+            - `nix flake update`
+
+            ```
+            ${{ steps.lock.outputs.summary }}
+            ```
+
+            Evaluated and config-generated on an arm64 runner; nothing was built in full or booted. A kernel bump still needs a build and a device test before merging; a failing canary needs the series in `pkgs/linux-kernel/fairphone-fp5/` rebased first (see `docs/fairphone-fp5.md`).

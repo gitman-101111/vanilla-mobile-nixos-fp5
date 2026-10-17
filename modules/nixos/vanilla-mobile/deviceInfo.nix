@@ -4,25 +4,25 @@
 }:
 {
   # Most of this information can be found in postmarketOS `deviceinfo` files.
-  # Example: <https://gitlab.postmarketos.org/postmarketOS/pmaports/-/blob/main/device/community/device-xiaomi-beryllium/deviceinfo>
+  # Example: <https://gitlab.postmarketos.org/postmarketOS/pmaports/-/blob/main/device/community/device-fairphone-fp5/deviceinfo>
   options.vanilla-mobile.deviceInfo = {
     name = lib.mkOption {
       type = lib.types.str;
-      example = "Xiaomi Poco F1";
+      example = "Fairphone 5";
     };
     codename = lib.mkOption {
       type = lib.types.str;
-      example = "xiaomi-beryllium";
+      example = "fairphone-fp5";
     };
     manufacturer = lib.mkOption {
       type = lib.types.str;
-      example = "Xiaomi";
+      example = "Fairphone";
     };
 
     dtb = lib.mkOption {
       type = with lib.types; nullOr str;
       default = null;
-      example = "qcom/sdm845-xiaomi-beryllium-tianma";
+      example = "qcom/qcm6490-fairphone-fp5.dtb";
       description = "Name of the device tree blob file";
     };
     # `rootfs_image_sector_size` in postmarketOS

@@ -29,8 +29,11 @@ printf '\n#include "fp5-audio.dtsi"\n#include "fp5-camera.dtsi"\n' \
 cp "$down/drivers/media/i2c/imx858.c" "$tmp/b/drivers/media/i2c/imx858.c"
 cp "$here/fp5-audio.dtsi" "$here/fp5-camera.dtsi" "$tmp/b/arch/arm64/boot/dts/qcom/"
 
+# Keep the prose header (everything before the first "diff " line). Read it
+# before opening the output, which truncates the file.
+header="$(sed '/^diff /,$d' "$here/fairphone-fp5-board-support.patch")"
 {
-  sed -n '1,/^$/p' "$here/fairphone-fp5-board-support.patch" | sed '/^diff /,$d'
+  printf '%s\n' "$header"
   (cd "$tmp" && diff -Naur a b) || true
 } > "$here/fairphone-fp5-board-support.patch"
 echo "wrote fairphone-fp5-board-support.patch"

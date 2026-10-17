@@ -1,0 +1,274 @@
+From 544d85de4dc22c01badfd8cefa59829ce35c4858 Mon Sep 17 00:00:00 2001
+From: Chris Lew <christopher.lew@oss.qualcomm.com>
+Date: Thu, 27 Aug 2026 17:48:46 +0530
+Subject: [PATCH] net: qrtr: Send HELLO message on endpoint register
+
+HELLO is currently handled entirely by the name server (NS): it is
+sent once as a broadcast when the NS initializes, and again as a
+reply whenever the NS receives an inbound HELLO from a remote.
+
+Some remote QRTR endpoints (e.g. an external WLAN chipset attached
+over MHI) operate in a slave role: they only ever send a HELLO in
+response to one they receive, and never initiate. Since the host cannot
+tell in advance which remotes behave this way, if the host also only
+replies, both sides wait on the other to speak first and no HELLO is
+ever exchanged, stalling further communication.
+
+To fix this:
+- Transfer HELLO handshake ownership to the core layer. A HELLO is
+  now sent once, per endpoint, at registration time.
+- Schedule a delayed work item on endpoint registration to send a
+  HELLO once the name server is bound. The work reschedules itself
+  with a 100ms backoff if the name server socket is not yet bound or
+  if allocating the control packet fails, so a transient startup
+  condition does not abandon the handshake permanently.
+- Enforce HELLO-first ordering by dropping non-HELLO packets and
+  returning -EAGAIN until the HELLO is confirmed sent, using bool
+  hello_sent guarded by ep_lock to make the gate check atomic with
+  xmit().
+- Skip nodes with nid == QRTR_EP_NID_AUTO in bcast_enqueue(), to avoid
+  broadcasting control packets with QRTR_EP_NID_AUTO as the destination
+  node ID.
+- Remove say_hello() from the name server's ctrl_cmd_hello() handler
+  and from qrtr_ns_init(); the core layer is now the sole sender of
+  the outbound HELLO. This removes the NS's reply-on-receive
+  behaviour without a replacement.
+
+Signed-off-by: Chris Lew <christopher.lew@oss.qualcomm.com>
+Co-developed-by: Deepak Kumar Singh <deepak.singh@oss.qualcomm.com>
+Signed-off-by: Deepak Kumar Singh <deepak.singh@oss.qualcomm.com>
+Co-developed-by: Pranav Mahesh Phansalkar <pranav.phansalkar@oss.qualcomm.com>
+Signed-off-by: Pranav Mahesh Phansalkar <pranav.phansalkar@oss.qualcomm.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ net/qrtr/af_qrtr.c | 66 ++++++++++++++++++++++++++++++++++++++++++++--
+ net/qrtr/ns.c      | 35 +-----------------------
+ 2 files changed, 65 insertions(+), 36 deletions(-)
+
+diff --git a/net/qrtr/af_qrtr.c b/net/qrtr/af_qrtr.c
+index a30fa56e6aa31c..78347c937af76b 100644
+--- a/net/qrtr/af_qrtr.c
++++ b/net/qrtr/af_qrtr.c
+@@ -9,6 +9,7 @@
+ #include <linux/termios.h>	/* For TIOCINQ/OUTQ */
+ #include <linux/spinlock.h>
+ #include <linux/wait.h>
++#include <linux/workqueue.h>
+ 
+ #include <net/sock.h>
+ 
+@@ -120,8 +121,10 @@ static DEFINE_XARRAY_ALLOC(qrtr_ports);
+  * @nid: node id
+  * @qrtr_tx_flow: xarray of qrtr_tx_flow, keyed by node << 32 | port
+  * @qrtr_tx_lock: lock for qrtr_tx_flow inserts
++ * @hello_sent: hello packet send successful
+  * @rx_queue: receive queue
+  * @item: list item for broadcast list
++ * @say_hello: delayed work for sending hello packet
+  */
+ struct qrtr_node {
+ 	struct mutex ep_lock;
+@@ -132,8 +135,11 @@ struct qrtr_node {
+ 	struct xarray qrtr_tx_flow;
+ 	struct mutex qrtr_tx_lock; /* for qrtr_tx_flow */
+ 
++	bool hello_sent;
++
+ 	struct sk_buff_head rx_queue;
+ 	struct list_head item;
++	struct delayed_work say_hello;
+ };
+ 
+ /**
+@@ -187,6 +193,8 @@ static void __qrtr_node_release(struct kref *kref)
+ 	list_del(&node->item);
+ 	mutex_unlock(&qrtr_node_lock);
+ 
++	cancel_delayed_work_sync(&node->say_hello);
++
+ 	skb_queue_purge(&node->rx_queue);
+ 
+ 	/* Free tx flow counters */
+@@ -341,6 +349,14 @@ static int qrtr_node_enqueue(struct qrtr_node *node, struct sk_buff *skb,
+ 	size_t len = skb->len;
+ 	int rc, confirm_rx;
+ 
++	mutex_lock(&node->ep_lock);
++	if (!node->hello_sent && type != QRTR_TYPE_HELLO) {
++		mutex_unlock(&node->ep_lock);
++		kfree_skb(skb);
++		return -EAGAIN;
++	}
++	mutex_unlock(&node->ep_lock);
++
+ 	confirm_rx = qrtr_tx_wait(node, to->sq_node, to->sq_port, type);
+ 	if (confirm_rx < 0) {
+ 		kfree_skb(skb);
+@@ -353,7 +369,7 @@ static int qrtr_node_enqueue(struct qrtr_node *node, struct sk_buff *skb,
+ 	hdr->src_node_id = cpu_to_le32(from->sq_node);
+ 	hdr->src_port_id = cpu_to_le32(from->sq_port);
+ 	if (to->sq_port == QRTR_PORT_CTRL) {
+-		hdr->dst_node_id = cpu_to_le32(node->nid);
++		hdr->dst_node_id = cpu_to_le32(READ_ONCE(node->nid));
+ 		hdr->dst_port_id = cpu_to_le32(QRTR_PORT_CTRL);
+ 	} else {
+ 		hdr->dst_node_id = cpu_to_le32(to->sq_node);
+@@ -372,6 +388,8 @@ static int qrtr_node_enqueue(struct qrtr_node *node, struct sk_buff *skb,
+ 			rc = node->ep->xmit(node->ep, skb);
+ 		else
+ 			kfree_skb(skb);
++		if (!rc && type == QRTR_TYPE_HELLO)
++			node->hello_sent = true;
+ 		mutex_unlock(&node->ep_lock);
+ 	}
+ 	/* Need to ensure that a subsequent message carries the otherwise lost
+@@ -379,6 +397,9 @@ static int qrtr_node_enqueue(struct qrtr_node *node, struct sk_buff *skb,
+ 	if (rc && confirm_rx)
+ 		qrtr_tx_flow_failed(node, to->sq_node, to->sq_port);
+ 
++	if (rc == -EAGAIN && type == QRTR_TYPE_HELLO)
++		schedule_delayed_work(&node->say_hello, msecs_to_jiffies(100));
++
+ 	return rc;
+ }
+ 
+@@ -416,7 +437,7 @@ static void qrtr_node_assign(struct qrtr_node *node, unsigned int nid)
+ 	spin_lock_irqsave(&qrtr_nodes_lock, flags);
+ 	radix_tree_insert(&qrtr_nodes, nid, node);
+ 	if (node->nid == QRTR_EP_NID_AUTO)
+-		node->nid = nid;
++		WRITE_ONCE(node->nid, nid);
+ 	spin_unlock_irqrestore(&qrtr_nodes_lock, flags);
+ }
+ 
+@@ -570,6 +591,38 @@ static struct sk_buff *qrtr_alloc_ctrl_packet(struct qrtr_ctrl_pkt **pkt,
+ 	return skb;
+ }
+ 
++static void qrtr_hello_work(struct work_struct *work)
++{
++	struct sockaddr_qrtr from = {AF_QIPCRTR, 0, QRTR_PORT_CTRL};
++	struct sockaddr_qrtr to = {AF_QIPCRTR, 0, QRTR_PORT_CTRL};
++	struct qrtr_ctrl_pkt *pkt;
++	struct qrtr_node *node;
++	struct qrtr_sock *ctrl;
++	struct sk_buff *skb;
++
++	node = container_of(to_delayed_work(work), struct qrtr_node, say_hello);
++
++	/* NS must be bound before we can send; retry with backoff if not ready */
++	ctrl = qrtr_port_lookup(QRTR_PORT_CTRL);
++	if (!ctrl) {
++		schedule_delayed_work(&node->say_hello, msecs_to_jiffies(100));
++		return;
++	}
++
++	skb = qrtr_alloc_ctrl_packet(&pkt, GFP_KERNEL);
++	if (!skb) {
++		qrtr_port_put(ctrl);
++		schedule_delayed_work(&node->say_hello, msecs_to_jiffies(100));
++		return;
++	}
++
++	pkt->cmd = cpu_to_le32(QRTR_TYPE_HELLO);
++	from.sq_node = qrtr_local_nid;
++	to.sq_node = node->nid;
++	qrtr_node_enqueue(node, skb, QRTR_TYPE_HELLO, &from, &to);
++	qrtr_port_put(ctrl);
++}
++
+ /**
+  * qrtr_endpoint_register() - register a new endpoint
+  * @ep: endpoint to register
+@@ -595,6 +648,9 @@ int qrtr_endpoint_register(struct qrtr_endpoint *ep, unsigned int nid)
+ 	node->nid = QRTR_EP_NID_AUTO;
+ 	node->ep = ep;
+ 
++	node->hello_sent = false;
++	INIT_DELAYED_WORK(&node->say_hello, qrtr_hello_work);
++
+ 	xa_init(&node->qrtr_tx_flow);
+ 	mutex_init(&node->qrtr_tx_lock);
+ 
+@@ -605,6 +661,9 @@ int qrtr_endpoint_register(struct qrtr_endpoint *ep, unsigned int nid)
+ 	mutex_unlock(&qrtr_node_lock);
+ 	ep->node = node;
+ 
++	/* Initiate HELLO handshake from the core layer */
++	schedule_delayed_work(&node->say_hello, 0);
++
+ 	return 0;
+ }
+ EXPORT_SYMBOL_GPL(qrtr_endpoint_register);
+@@ -879,6 +938,9 @@ static int qrtr_bcast_enqueue(struct qrtr_node *node, struct sk_buff *skb,
+ 
+ 	mutex_lock(&qrtr_node_lock);
+ 	list_for_each_entry(node, &qrtr_all_nodes, item) {
++		/* Skip nodes with no assigned node ID yet. */
++		if (READ_ONCE(node->nid) == QRTR_EP_NID_AUTO)
++			continue;
+ 		skbn = pskb_copy(skb, GFP_KERNEL);
+ 		if (!skbn)
+ 			break;
+diff --git a/net/qrtr/ns.c b/net/qrtr/ns.c
+index c5e7e01db24984..bcb090ee79d494 100644
+--- a/net/qrtr/ns.c
++++ b/net/qrtr/ns.c
+@@ -212,6 +212,7 @@ static void lookup_notify(struct sockaddr_qrtr *to, struct qrtr_server *srv,
+ 		pr_err("failed to send lookup notification\n");
+ }
+ 
++/* Announce the list of servers registered on the local node */
+ static int announce_servers(struct sockaddr_qrtr *sq)
+ {
+ 	struct qrtr_server *srv;
+@@ -326,38 +327,8 @@ static int server_del(struct qrtr_node *node, unsigned int port, bool bcast)
+ 	return 0;
+ }
+ 
+-static int say_hello(struct sockaddr_qrtr *dest)
+-{
+-	struct qrtr_ctrl_pkt pkt;
+-	struct msghdr msg = { };
+-	struct kvec iv;
+-	int ret;
+-
+-	iv.iov_base = &pkt;
+-	iv.iov_len = sizeof(pkt);
+-
+-	memset(&pkt, 0, sizeof(pkt));
+-	pkt.cmd = cpu_to_le32(QRTR_TYPE_HELLO);
+-
+-	msg.msg_name = (struct sockaddr *)dest;
+-	msg.msg_namelen = sizeof(*dest);
+-
+-	ret = kernel_sendmsg(qrtr_ns.sock, &msg, &iv, 1, sizeof(pkt));
+-	if (ret < 0)
+-		pr_err("failed to send hello msg\n");
+-
+-	return ret;
+-}
+-
+-/* Announce the list of servers registered on the local node */
+ static int ctrl_cmd_hello(struct sockaddr_qrtr *sq)
+ {
+-	int ret;
+-
+-	ret = say_hello(sq);
+-	if (ret < 0)
+-		return ret;
+-
+ 	return announce_servers(sq);
+ }
+ 
+@@ -774,10 +745,6 @@ int qrtr_ns_init(void)
+ 	qrtr_ns.bcast_sq.sq_node = QRTR_NODE_BCAST;
+ 	qrtr_ns.bcast_sq.sq_port = QRTR_PORT_CTRL;
+ 
+-	ret = say_hello(&qrtr_ns.bcast_sq);
+-	if (ret < 0)
+-		goto err_wq;
+-
+ 	/* As the qrtr ns socket owner and creator is the same module, we have
+ 	 * to decrease the qrtr module reference count to guarantee that it
+ 	 * remains zero after the ns socket is created, otherwise, executing

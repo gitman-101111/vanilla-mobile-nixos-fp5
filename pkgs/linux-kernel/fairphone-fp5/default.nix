@@ -12,18 +12,28 @@
 # its postPatch from build.nix, so a postPatch here is silently dropped and
 # the Kconfig entry never exists when the config is generated.
 #
+# The base is pkgs.linux_latest, so a nixpkgs bump that moves linux_latest to
+# a new major moves this kernel with it. The patches below are validated on
+# the release pinned in flake.lock; when the base moves, the update
+# workflow's canary (.github/.forgejo workflows/update.yml) applies them in
+# order and generates the config on the new source, so a patch that no
+# longer applies — or one that has landed upstream and now applies reversed
+# — shows up there before anything is built. Either way it fails the build
+# at the configfile step.
+#
 # How to update:
 # - Regenerate the patch with ./update-board-patch.sh against a newer tree.
 # - The .dtsi files inside it are label-referenced, so unrelated churn does not
 #   break them; dtc fails the build if a referenced label disappears.
+# - Drop any patch that has landed upstream in the new base.
 {
   lib,
-  linuxKernel,
+  linux_latest,
   stdenv,
   ...
 }:
 let
-  kernel = linuxKernel.kernels.linux_7_1;
+  kernel = linux_latest;
 in
 kernel.override {
   argsOverride = {
@@ -57,29 +67,19 @@ kernel.override {
     #
     #   Bluetooth: hci0: unexpected event for opcode 0xfc48
     #
-    # Unmerged upstream as of 7.1.5.
+    # Not upstream; drop once a bump makes this patch apply reversed.
     {
       name = "hci-qca-drop-unused-event";
       patch = ./hci-qca-drop-unused-event.patch;
     }
-    # Speaker amps and AFE clock voting. Without these the aw88261 amps never
-    # leave "device start failed" and the speakers make no sound on mainline.
-    # The aw88261 side is the FROMLIST series tested on this phone; the q6afe
-    # hunk fixes the LPASS clock-vote response being misread. Both unmerged
-    # as of 7.1.5.
+    # AFE clock voting: the LPASS core hw-vote response carries a bare u32,
+    # not an aprv2_ibasic_rsp_result_t, so q6afe misread it and the aw88261
+    # amps never left "device start failed" (no speaker sound). The aw88261
+    # driver fixes that used to ride along here landed upstream in 7.2; the
+    # q6afe hunk is not upstream.
     {
-      name = "aw88261-and-q6afe-fixes";
-      patch = ./aw88261-and-q6afe-fixes.patch;
-    }
-    # Every qcom adc-tm thermal zone (the 8 PMIC thermistor zones on this
-    # phone) returns -EINVAL: iio_read_channel_processed() has returned 0 on
-    # success since the iio_multiply_value() refactor, but adc_tm5_get_temp
-    # still expects the old convention of returning IIO_VAL_INT. The raw IIO
-    # channels read fine; only this check fails. Still broken in mainline
-    # master as of 7.1.5 -- worth reporting upstream.
-    {
-      name = "adc-tm5-processed-read";
-      patch = ./adc-tm5-processed-read.patch;
+      name = "q6afe-lpass-core-vote-response";
+      patch = ./q6afe-lpass-core-vote-response.patch;
     }
     # NFC. The chip is on i2c9 at 0x08 (mainline's "@ 28" comment copies a
     # sloppy downstream node name; the downstream reg and a live probe both
@@ -100,8 +100,7 @@ kernel.override {
     # these patches add the QSEECOM *TEE* driver that exposes trusted apps
     # through /dev/tee*, plus the misc driver that owns the sensor's reset/
     # power/irq GPIOs and the DT node. Imported from
-    # github.com/marcusramberg/nixos-fairphone-fp5; they apply cleanly to
-    # mainline 7.1.5.
+    # github.com/marcusramberg/nixos-fairphone-fp5.
     {
       name = "qcom-scm-qseecom-fp5-allowlist";
       patch = ./qcom-scm-qseecom-fp5-allowlist.patch;
@@ -126,6 +125,44 @@ kernel.override {
       name = "dts-fp5-fingerprint-sensor";
       patch = ./dts-fp5-fingerprint-sensor.patch;
     }
+    # ADSP audio PD boot race (found 2026-10-19). On roughly a third of cold
+    # boots the ADSP's audio protection domain never registers: no APR
+    # services, no sound card, no battery reporting. Cause, on the host
+    # side: qcom_glink_create_ept() sends the OPEN_ACK for the ADSP's
+    # IPCRTR channel before the endpoint callback is installed and before
+    # qrtr_smd's probe has registered the QRTR endpoint; the ADSP sends its
+    # single HELLO the instant it sees OPEN_ACK, and a packet arriving in
+    # that window is silently dropped (glink drops data with no callback,
+    # and ignores the -EAGAIN qrtr_smd returns before probe). The ADSP then
+    # waits for a HELLO from us, which this kernel never sends, so the
+    # whole QRTR handshake (name service, PD mapper, PDR) never happens for
+    # that DSP. Re-opening the channel or restarting the ADSP redoes the
+    # handshake, which is why those "healed" it.
+    #
+    # Upstream fix, in 7.3: the host sends its own HELLO once the endpoint
+    # is registered (with retry), so the DSP's reply always lands on a ready
+    # endpoint and the order no longer matters. Backported verbatim from
+    # 544d85de4dc2 ("net: qrtr: Send HELLO message on endpoint register"),
+    # and applied only below 7.3, where it is already in the tree.
+  ]
+  ++ lib.optional (lib.versionOlder kernel.version "7.3") {
+    name = "qrtr-send-hello-on-endpoint-register";
+    patch = ./qrtr-send-hello-on-endpoint-register.patch;
+  }
+  ++ [
+    # Verified 2026-10-19: 6 of 6 cold boots good on the backport (1 in 3
+    # were bad before), each trace showing the ADSP answering our HELLO. The
+    # per-packet QRTR trace used to find this (qrtr.debug_node=N, a 10-hunk
+    # patch to af_qrtr.c/ns.c/qcom_pd_mapper.c) is kept in
+    # ~/Development/fp5-next-patches/ rather than here, so it costs nothing
+    # on the shipped kernel.
+    # Tried and dropped (2026-10-17): restoring 7.1's fixed ADSP FastRPC remote
+    # heap carveout in place of the shared-dma-pool kodiak.dtsi has since 7.2.
+    # It silenced the ~5/s "Handover signaled, but it already happened" storm,
+    # but upstream added the pool "for audio PD dynamic loading", and on the
+    # boot tested the ADSP audio PD never came up (no APR services, no sound
+    # card). Inconclusive, since the audio PD also fails to start on some
+    # boots without it.
   ];
 
   # Remove some mostly raspberry pi specific stuff.
@@ -242,5 +279,74 @@ kernel.override {
     SECURITY_LOCKDOWN_LSM = yes;
     SECURITY_LOCKDOWN_LSM_EARLY = yes;
     LOCK_DOWN_KERNEL_FORCE_CONFIDENTIALITY = yes;
+  })
+  # --- Only hardware a qcm6490 phone can have ------------------------------
+  # nixpkgs' aarch64 baseline is arm64 defconfig: every SoC family enabled
+  # and every driver built as a module (7.8k modules shipped, ~220 loaded).
+  # Each ARCH_* pulls in that vendor's clock, pinctrl, phy, display, ...
+  # drivers, so turning the families off drops them wholesale: a much
+  # shorter build and a smaller signed module tree. Generic subsystems the
+  # phone uses (USB, Bluetooth, mac80211/ath11k, V4L2, ASoC, ...) and
+  # USB-attached device classes are untouched. Expressed as Kconfig options
+  # so it carries to newer kernels unchanged; a family that is renamed or
+  # dropped upstream shows up as "unused option" at the configfile step.
+  // lib.genAttrs (map (a: "ARCH_${a}") [
+    "ACTIONS" "AIROHA" "ALPINE" "APPLE" "ASPEED" "AXIADO" "BCM" "BERLIN"
+    "BLAIZE" "BST" "CIX" "EXYNOS" "HISI" "INTEL_SOCFPGA" "K3" "KEEMBAY"
+    "LG1K" "MA35" "MEDIATEK" "MESON" "MICROCHIP" "MVEBU" "NPCM" "NXP"
+    "REALTEK" "RENESAS" "ROCKCHIP" "SEATTLE" "SOPHGO" "SPRD" "STM32" "SUNXI"
+    "SYNQUACER" "TEGRA" "THUNDER" "THUNDER2" "UNIPHIER" "VEXPRESS" "VISCONTI"
+    "XGENE" "ZYNQMP"
+  ]) (lib.const lib.kernel.no)
+  // (with lib.kernel; {
+    # Board options nixpkgs' common-config forces on for SoC families that
+    # are off above: they no longer exist in this config, so mark them
+    # optional rather than letting the generator fail on them.
+    DRM_VC4_HDMI_CEC = lib.mkForce (option no); # BCM2835
+    FSL_MC_UAPI_SUPPORT = lib.mkForce (option no); # NXP Layerscape
+    MT798X_WMAC = lib.mkForce (option no); # MediaTek
+    NET_VENDOR_MEDIATEK = lib.mkForce (option no); # MediaTek
+    ROCKCHIP_DW_HDMI_QP = lib.mkForce (option no); # Rockchip
+    ROCKCHIP_DW_MIPI_DSI2 = lib.mkForce (option no); # Rockchip
+    SUN8I_DE2_CCU = lib.mkForce (option no); # Allwinner
+    USB_XHCI_TEGRA = lib.mkForce (option no); # Tegra
+
+    # Hardware classes that cannot be attached to this board (no PCIe
+    # slots): desktop GPUs, PCI capture cards, RDMA, PCI SCSI HBAs. UFS
+    # lives outside SCSI_LOWLEVEL and stays. Each cut below is paired with
+    # the sub-options nixpkgs' common-config sets under it, which cease to
+    # exist once the parent is off; a nixpkgs bump that adds another one
+    # shows up as "unused option" at the configfile step. Cuts whose
+    # collateral is larger than their gain (PCI sound: five overrides for
+    # ~250 objects) are deliberately not made.
+    DRM_AMDGPU = no;
+    DRM_AMDGPU_SI = lib.mkForce (option no);
+    DRM_AMDGPU_CIK = lib.mkForce (option no);
+    DRM_AMDGPU_USERPTR = lib.mkForce (option no);
+    DRM_AMD_ACP = lib.mkForce (option no);
+    DRM_AMD_DC_FP = lib.mkForce (option no);
+    DRM_AMD_DC_SI = lib.mkForce (option no);
+    DRM_AMD_ISP = lib.mkForce (option no);
+    DRM_AMD_SECURE_DISPLAY = lib.mkForce (option no);
+    HSA_AMD = lib.mkForce (option no);
+    HSA_AMD_P2P = lib.mkForce (option no);
+    DRM_AST = no;
+    DRM_MGAG200 = no;
+    DRM_NOUVEAU = no;
+    DRM_NOUVEAU_SVM = lib.mkForce (option no);
+    DRM_RADEON = no;
+    DRM_VMWGFX = no;
+    DRM_XE = no;
+    MEDIA_PCI_SUPPORT = lib.mkForce no;
+    INFINIBAND = lib.mkForce no;
+    INFINIBAND_IPOIB = lib.mkForce (option no);
+    INFINIBAND_IPOIB_CM = lib.mkForce (option no);
+    SCSI_LOWLEVEL = lib.mkForce no;
+    SCSI_LOWLEVEL_PCMCIA = lib.mkForce (option no);
+    AIC79XX_DEBUG_ENABLE = lib.mkForce (option no);
+    AIC7XXX_DEBUG_ENABLE = lib.mkForce (option no);
+    AIC94XX_DEBUG = lib.mkForce (option no);
+    MEGARAID_NEWGEN = lib.mkForce (option no);
+    FUSION = lib.mkForce no;
   });
 }

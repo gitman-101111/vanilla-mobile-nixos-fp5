@@ -1,0 +1,59 @@
+q6afe: read the LPASS core hw-vote response as a bare u32.
+
+AFE_CMD_RSP_REMOTE_LPASS_CORE_HW_VOTE_REQUEST carries a single u32 (the
+vote handle), not an aprv2_ibasic_rsp_result_t, so reading res->status
+from it misreads the response and the vote never succeeds. On the
+Fairphone 5 the aw88261 speaker amps then never leave "device start
+failed" and the speakers stay silent.
+
+The aw88261 driver fixes that used to ride in this file landed upstream
+in 7.2. Still unmerged as of 7.2.10.
+
+diff -Naur pa/sound/soc/qcom/qdsp6/q6afe.c pb/sound/soc/qcom/qdsp6/q6afe.c
+--- a/sound/soc/qcom/qdsp6/q6afe.c	2026-08-11 06:04:58.721670597 -0600
++++ b/sound/soc/qcom/qdsp6/q6afe.c	2026-08-11 06:04:58.724670652 -0600
+@@ -379,6 +379,7 @@
+ 	struct q6core_svc_api_info ainfo;
+ 	struct mutex lock;
+ 	struct aprv2_ibasic_rsp_result_t result;
++	uint32_t vote_result;
+ 	wait_queue_head_t wait;
+ 	struct list_head port_list;
+ 	spinlock_t port_list_lock;
+@@ -968,13 +969,14 @@
+ 	const struct aprv2_ibasic_rsp_result_t *res;
+ 	const struct apr_hdr *hdr = &data->hdr;
+ 	struct q6afe_port *port;
++	uint32_t *vote_res;
+ 
+ 	if (!data->payload_size)
+ 		return 0;
+ 
+-	res = data->payload;
+ 	switch (hdr->opcode) {
+ 	case APR_BASIC_RSP_RESULT: {
++		res = data->payload;
+ 		if (res->status) {
+ 			dev_err(afe->dev, "cmd = 0x%x returned error = 0x%x\n",
+ 				res->opcode, res->status);
+@@ -1001,8 +1003,10 @@
+ 	}
+ 		break;
+ 	case AFE_CMD_RSP_REMOTE_LPASS_CORE_HW_VOTE_REQUEST:
++		vote_res = data->payload;
+ 		afe->result.opcode = hdr->opcode;
+-		afe->result.status = res->status;
++		afe->result.status = 0;
++		afe->vote_result = *vote_res;
+ 		wake_up(&afe->wait);
+ 		break;
+ 	default:
+@@ -1899,6 +1903,8 @@
+ 			       AFE_CMD_RSP_REMOTE_LPASS_CORE_HW_VOTE_REQUEST);
+ 	if (ret)
+ 		dev_err(afe->dev, "AFE failed to vote (%d)\n", hw_block_id);
++	else
++		*client_handle = afe->vote_result;
+ 
+ 	return ret;
+ }

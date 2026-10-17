@@ -1,14 +1,10 @@
 {
   hexagonrpc,
-  fetchpatch2,
 }:
+# nixpkgs' hexagonrpc 0.5.0 already ships the systemd units (upstream commit
+# c4109b45), which this used to add with a patch.
 hexagonrpc.overrideAttrs (prevAttrs: {
   patches = (prevAttrs.patches or [ ]) ++ [
-    (fetchpatch2 {
-      name = "add-systemd-services.patch";
-      url = "https://github.com/linux-msm/hexagonrpc/commit/c4109b45023f7dcc5ef20f68b9bebffc6736da7b.patch?full_index=1";
-      hash = "sha256-nrVzJ8wjNXTFKgCdiuaPKal31oX4Z0cwGlE9+fe8DZw=";
-    })
     # hexagonfs is read-only upstream: every open for write from the DSP is
     # refused with AEE_EUNSUPPORTED. The ADSP sensor process needs to write
     # back its registry (temp.json + rename over the target, and

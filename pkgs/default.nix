@@ -12,8 +12,6 @@ in
   ubootPackages = recurseIntoAttrs (callPackage ./uboot { });
 
   # Firmware
-  xiaomi-beryllium-firmware = callPackage ./xiaomi-beryllium-firmware { };
-  oneplus-sdm845-firmware = callPackage ./oneplus-sdm845-firmware { };
   fairphone-fp5-firmware = callPackage ./fairphone-fp5-firmware { };
   ftharness = callPackage ./ftharness { };
   ffsupplicant = callPackage ./ffsupplicant { };
@@ -22,8 +20,6 @@ in
 
   # FP5-only verified-boot tooling (docs/verified-boot.md).
   fairphone-fp5-verified-boot = recurseIntoAttrs (callPackage ./fairphone-fp5-verified-boot { });
-
-  alsa-ucm-conf-sdm845 = callPackage ./alsa-ucm-conf-sdm845 { };
 
   bootmac = callPackage ./bootmac { };
   unudhcpd = callPackage ./unudhcpd { };

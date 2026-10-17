@@ -33,28 +33,22 @@ Many of the devices that work best for mobile Linux are older devices you can bu
 secondhand.
 
 Tested Devices:
-- [Xiaomi POCO F1 Tianma (xiaomi-beryllium)](docs/xiaomi-beryllium.md)
-  - SIM card currently untested.
 - [Fairphone 5 (fairphone-fp5)](docs/fairphone-fp5.md)
   - Modem registers; voice calls need q6voiced wiring (see the hardware table).
   - Main camera driver needed.
 
 Implemented but untested:
-- Xiaomi POCO F1 EBBG
-  - Will need to be added to alsa-ucm-conf-sdm845 like I did for Tianma [here](https://gitlab.com/sdm845-mainline/alsa-ucm-conf/-/merge_requests/32).
-    Run this command to find out what symlink needs to be added:
-    `nix-shell -p alsa-utils --run "strace alsaucm reload"`
-- SDM845 kernel with non-beryllium devices.
-  - OnePlus 6 (oneplus-enchilada)
-  - OnePlus 6T (oneplus-fajita)
-  - Samsung Galaxy S9 (samsung-starqltechn)
-  - SHIFT SHIFT6mq (shift-axolotl)
-- Samsung Galaxy A2 Core U-Boot
+- Samsung Galaxy A2 Core U-Boot (package only; no device module)
+
+This fork is maintained for the Fairphone 5 only. The Xiaomi POCO F1 and
+OnePlus 6 (sdm845) support that upstream vanilla-mobile-nixos carries was
+removed here, because the sdm845 kernel tracks a separate patch set that
+cannot follow `pkgs.linux_latest`.
 
 ## What software should I use?
 
 Depending on your tastes, it's possible to keep your mobile config 95% identical
-to your desktop config or completely custom. See [docs/software-info.md](./docs/software-info.md)
+to your desktop config or completely custom. See [docs/installing.md](./docs/installing.md) for the generic install flow and [docs/software-info.md](./docs/software-info.md)
 for specific details and instructions.
 
 For security hardening (kernel hardening, module signing + lockdown,

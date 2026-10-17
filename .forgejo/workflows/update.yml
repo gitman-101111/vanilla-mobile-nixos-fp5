@@ -1,0 +1,166 @@
+name: update
+on:
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+# Forgejo twin of .github/workflows/update.yml: bump the flake inputs and
+# check whether the Fairphone 5 kernel's patch series and config survive the
+# new nixpkgs, then open (or update) a pull request with the report.
+#
+# Differences from the GitHub version:
+# - The PR is opened through Forgejo's API with the job token (there is no
+#   create-pull-request action for Forgejo).
+# - `runs-on` must name a label your runner registered. The patch canary
+#   works on any architecture; the config canary builds the aarch64
+#   configfile derivation and is skipped, with a note, unless the runner is
+#   arm64 (or has aarch64 emulation configured for Nix).
+# - `actions/checkout` and the Nix installer are fetched the way your runner
+#   is configured to resolve actions (code.forgejo.org or github.com).
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v23
+
+      - id: lock
+        run: |
+          kernel='.#packages.aarch64-linux."linuxKernels/linux_fairphone_fp5"'
+          kver() { nix eval --raw "$kernel.version"; }
+          before=$(kver)
+          nix flake update
+          after=$(kver)
+          echo "kernel_before=$before" >> "$GITHUB_OUTPUT"
+          echo "kernel_after=$after"   >> "$GITHUB_OUTPUT"
+          if git diff --quiet; then echo "changed=false" >> "$GITHUB_OUTPUT"; else echo "changed=true" >> "$GITHUB_OUTPUT"; fi
+          {
+            echo 'summary<<EOF'
+            git --no-pager diff --stat
+            echo
+            nix flake metadata --json | nix shell --inputs-from . nixpkgs#jq -c jq -r '.locks.nodes | to_entries[] | select(.value.locked != null) | "\(.key): \(.value.locked.rev // .value.locked.url) (\(.value.locked.lastModified | todate))"'
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      # Canary 1: apply the kernel's patch list, in order, to the new source
+      # the way nixpkgs does (`patch -p1`, default fuzz). The list is taken
+      # from the derivation itself, so version-gated entries (a backport that
+      # drops itself once the base has it) are honoured. The source is nixpkgs' own
+      # linux_latest tarball (identical to the fork's), fetched for the
+      # runner's architecture so this step runs anywhere.
+      - name: Kernel patch canary
+        id: canary
+        if: steps.lock.outputs.changed == 'true'
+        run: |
+          kernel='.#packages.aarch64-linux."linuxKernels/linux_fairphone_fp5"'
+          src=$(nix build --inputs-from . --no-link --print-out-paths 'nixpkgs#linux_latest.src')
+          mkdir -p /tmp/k && tar -xf "$src" -C /tmp/k --strip-components=1
+          ok=0; total=0; failed=""; fuzzy=""
+          for p in $(nix eval --raw "$kernel.patches" --apply 'ps: builtins.concatStringsSep "\n" ps'); do
+            total=$((total + 1))
+            out=$(cd /tmp/k && patch -p1 -N --no-backup-if-mismatch < "$p" 2>&1) || true
+            if echo "$out" | grep -qE 'FAILED|can.t find file|hunks? ignored'; then
+              failed="$failed- $(basename "$p")"$'\n'"  $(echo "$out" | grep -m1 -E 'FAILED|can.t find file|ignored')"$'\n'
+            else
+              ok=$((ok + 1))
+              if echo "$out" | grep -q 'fuzz'; then
+                fuzzy="$fuzzy- $(basename "$p"): $(echo "$out" | grep -c fuzz) hunk(s) with fuzz"$'\n'
+              fi
+            fi
+          done
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          echo "total=$total" >> "$GITHUB_OUTPUT"
+          {
+            echo 'report<<EOF'
+            if [ -z "$failed" ]; then
+              echo "all $total patches apply to ${{ steps.lock.outputs.kernel_after }}"
+            else
+              echo "$ok/$total patches apply to ${{ steps.lock.outputs.kernel_after }}; failing:"
+              printf '%s' "$failed"
+            fi
+            if [ -n "$fuzzy" ]; then
+              echo "applied with fuzz (verify placement):"
+              printf '%s' "$fuzzy"
+            fi
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      # Canary 2: generate the kernel config on the new source. nixpkgs
+      # fails this derivation when an option the config sets no longer
+      # exists ("unused option") or cannot take the requested value.
+      - name: Kernel config canary
+        id: config
+        if: steps.lock.outputs.changed == 'true'
+        run: |
+          kernel='.#packages.aarch64-linux."linuxKernels/linux_fairphone_fp5-configfile"'
+          if [ "$(uname -m)" != "aarch64" ] && ! nix config show extra-platforms 2>/dev/null | grep -q aarch64-linux; then
+            echo "report=skipped: needs an arm64 runner (or aarch64 emulation in Nix) to generate the aarch64 config" >> "$GITHUB_OUTPUT"
+            echo "ok=skipped" >> "$GITHUB_OUTPUT"
+          elif nix build --no-link -L "$kernel" 2>/tmp/config.err; then
+            echo "report=config generates cleanly on ${{ steps.lock.outputs.kernel_after }}" >> "$GITHUB_OUTPUT"
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo 'report<<EOF'
+              echo "config generation FAILS on ${{ steps.lock.outputs.kernel_after }}:"
+              grep -E 'error: (unused option|option not set correctly)|error:' /tmp/config.err | sed 's/^linux-config> //' | sort -u | head -40
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Push the bump to update/inputs and open a PR, or refresh the open one.
+      - name: Open or update pull request
+        if: steps.lock.outputs.changed == 'true'
+        env:
+          TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          API: ${{ github.api_url }}
+          SERVER: ${{ github.server_url }}
+          BASE: ${{ github.ref_name }}
+          KERNEL_BEFORE: ${{ steps.lock.outputs.kernel_before }}
+          KERNEL_AFTER: ${{ steps.lock.outputs.kernel_after }}
+          CANARY: ${{ steps.canary.outputs.report }}
+          CANARY_OK: ${{ steps.canary.outputs.ok }}
+          CANARY_TOTAL: ${{ steps.canary.outputs.total }}
+          CONFIG: ${{ steps.config.outputs.report }}
+          CONFIG_OK: ${{ steps.config.outputs.ok }}
+          SUMMARY: ${{ steps.lock.outputs.summary }}
+        run: |
+          set -eu
+          jq() { nix shell --inputs-from . nixpkgs#jq -c jq "$@"; }
+          git config user.name "forgejo-actions"
+          git config user.email "forgejo-actions@noreply.${SERVER#*://}"
+          git checkout -B update/inputs
+          git add flake.lock
+          git commit -m "flake: update inputs (kernel $KERNEL_AFTER)"
+          git push --force "${SERVER%%://*}://oauth2:${TOKEN}@${SERVER#*://}/${REPO}.git" update/inputs
+
+          title="flake: update inputs (kernel $KERNEL_AFTER)"
+          if [ "$CANARY_OK" != "$CANARY_TOTAL" ] || [ "$CONFIG_OK" = "false" ]; then
+            title="$title — KERNEL CANARY FAILS"
+          fi
+          body=$(cat <<EOF
+          Weekly input refresh.
+
+          - Kernel (nixpkgs \`linux_latest\`): **$KERNEL_BEFORE → $KERNEL_AFTER**
+          - Patch canary: $CANARY
+          - Config canary: $CONFIG
+          - \`nix flake update\`
+
+          \`\`\`
+          $SUMMARY
+          \`\`\`
+
+          Evaluated on a runner; nothing was built in full or booted. A kernel bump still needs a build and a device test before merging; a failing canary needs the series in \`pkgs/linux-kernel/fairphone-fp5/\` rebased first (see \`docs/fairphone-fp5.md\`).
+          EOF
+          )
+          auth="Authorization: token $TOKEN"
+          existing=$(curl -fsS -H "$auth" "$API/repos/$REPO/pulls?state=open&limit=50" | jq -r '.[] | select(.head.ref == "update/inputs") | .number' | head -1)
+          payload=$(jq -n --arg t "$title" --arg b "$body" --arg h update/inputs --arg base "$BASE" '{title: $t, body: $b, head: $h, base: $base}')
+          if [ -n "$existing" ]; then
+            curl -fsS -X PATCH -H "$auth" -H 'Content-Type: application/json' -d "$payload" "$API/repos/$REPO/pulls/$existing" >/dev/null
+            echo "updated PR #$existing"
+          else
+            curl -fsS -X POST -H "$auth" -H 'Content-Type: application/json' -d "$payload" "$API/repos/$REPO/pulls" | jq -r '"opened PR #\(.number)"'
+          fi

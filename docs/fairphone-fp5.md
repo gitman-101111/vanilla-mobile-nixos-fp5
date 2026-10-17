@@ -1,14 +1,14 @@
 # Fairphone 5 (fairphone-fp5)
 
-The Fairphone 5 is a Qualcomm QCM6490 (SC7280-class) device. This port runs a
-mainline `linux_7_1` kernel with a set of board patches, plus userspace for the
-Qualcomm remote processors, audio, NFC and fingerprint.
+The Fairphone 5 is a Qualcomm QCM6490 (SC7280-class) device. This port runs
+the newest mainline kernel in nixpkgs (`pkgs.linux_latest`, at whatever
+version `flake.lock` pins) with a set of board patches, plus userspace for the Qualcomm remote
+processors, audio, NFC and fingerprint.
 
 ## Setup
 
-The install follows the same shape as the other devices (see
-[xiaomi-beryllium](./xiaomi-beryllium.md) for the general flow); the
-device-specific facts are:
+The generic flow (install config, disko images, U-Boot, flashing, SSH) is in
+[installing.md](./installing.md); the device-specific facts are:
 
 - Bootloader must be unlocked (`fastboot flashing unlock`).
 - The example config is `examples/installConfigs/fairphone-fp5`
@@ -65,8 +65,7 @@ On top of what mainline provides. Paths are relative to the repository root.
 | `fairphone-fp5-board-support.patch` | Board device tree, rear-camera (imx858) wiring and driver, board audio — imported from sc7280-mainline |
 | `fp5-audio.dtsi`, `fp5-camera.dtsi` | Device-tree fragments referenced by the board-support patch |
 | `imx858.c`, `imx858-kconfig` | Rear ultrawide camera sensor driver |
-| `aw88261-and-q6afe-fixes.patch` | Speaker amp (aw88261) FROMLIST fixes + q6afe LPASS clock-vote fix; without them the speakers stay silent |
-| `adc-tm5-processed-read.patch` | Fixes `adc_tm5_get_temp()` returning `-EINVAL` after the `iio_read_channel_processed()` convention change; restores the 8 PMIC thermal zones |
+| `q6afe-lpass-core-vote-response.patch` | q6afe LPASS core clock-vote response fix; without it the aw88261 speaker amps never start and the speakers stay silent (the aw88261 driver fixes that used to accompany it are upstream since 7.2) |
 | `hci-qca-drop-unused-event.patch` | WCN6750 sends the baudrate-change complete event asynchronously; drops the spurious event so Bluetooth registers |
 | `ptn36502-redriver-startup-delay.patch` | Gives the USB-C redriver rail settling time so DP/display probes reliably |
 | `st21nfcd-nfc-driver.patch` | New `st21nfcd` raw-NCI I²C driver (the ST54-generation chip speaks NCI without NDLC framing, so `st-nci` cannot attach) + its DT node on `i2c9` |
@@ -75,6 +74,18 @@ On top of what mainline provides. Paths are relative to the repository root.
 | `qcom-scm-qseecom-fp5-allowlist.patch` | Adds `fairphone,fp5` to the SCM QSEECOM allowlist so the interface binds |
 | `misc-focaltech-fp-driver.patch` | `focaltech-fp` misc driver owning the sensor's reset/power/interrupt GPIOs and exposing `/dev/focaltech_fp` |
 | `dts-fp5-fingerprint-sensor.patch` | Fingerprint DT node + pinctrl states |
+| `qrtr-send-hello-on-endpoint-register.patch` | Backport of upstream 544d85de4dc2 (upstream since 7.3): the host sends its own QRTR HELLO once an endpoint is registered, so a DSP whose first HELLO was lost in the glink open window still completes the handshake — the ADSP audio-PD boot race (see "Sensor bring-up"). Version-gated in `default.nix`, so it drops itself once the base has it |
+
+The kernel tracks nixpkgs' `linux_latest`, so a nixpkgs bump can move it to a
+new major. The weekly `update` workflow (`.github/workflows/update.yml`) runs
+`nix flake update` on an arm64 runner, applies this patch series in order to
+the new source the way nixpkgs does, generates the kernel config (which fails
+on any Kconfig symbol the config sets that no longer exists), and opens a PR
+with the report — so a breaking bump is visible before anyone builds it. The
+same two steps can be run by hand after a `nix flake update` when the repo
+has been dormant. A patch that applies with fuzz has applied, but check that
+the hunk landed where it should; a patch that applies reversed has landed
+upstream and should be dropped.
 
 ### SoC / device modules (`modules/nixos/vanilla-mobile/soc/qcm6490/`)
 
@@ -153,6 +164,32 @@ Two things matter for a reliable attach:
   remoteproc to report `running` plus a settle, with a bounded, spaced retry
   policy (`startLimitBurst`/`RestartSec`) so even a failed attach cannot hold
   up or storm the boot.
+- **The QRTR handshake must not depend on who speaks first.** With the
+  mapper race closed, roughly a third of cold boots still came up with no
+  audio PD (no `Adding APR/GPR dev`, no sound card, no battery via
+  pmic_glink) while the sensor PD attached fine, and an ADSP-only restart
+  repaired it. A per-packet QRTR trace (a temporary `qrtr.debug_node=`
+  diagnostics patch, not shipped) showed the ADSP's IPCRTR channel open and bound to
+  `qcom_smd_qrtr` but not one packet ever received from it: its HELLO was
+  lost. On the host, `qcom_glink_create_ept()` sends the OPEN_ACK for a
+  remote-opened channel and only then installs the endpoint callback, after
+  which the rpmsg core runs the driver's probe that registers the QRTR
+  endpoint; the DSP's IPC router sends its single HELLO the instant it sees
+  the OPEN_ACK, and glink silently drops data arriving in either window.
+  A host without the HELLO-on-register change (upstream since 7.3) never
+  initiates a HELLO itself, so a DSP that loses the
+  race waits forever and the whole chain behind it (name service, PD
+  mapper lookups, PDR, APR) never starts. Re-opening the channel (unbind +
+  bind of `qcom_smd_qrtr` on `3700000.remoteproc:glink-edge.IPCRTR.-1.-1`)
+  makes the ADSP re-send HELLO and the audio PD appears within 100 ms, which
+  is the whole proof. The fix is upstream's own, backported in
+  `qrtr-send-hello-on-endpoint-register.patch` (544d85de4dc2, upstream since 7.3): the
+  host sends a HELLO once its endpoint is registered, with retry, so the
+  DSP's reply always lands on a ready endpoint and the order no longer
+  matters. Earlier theories (a stale node→endpoint route in `qrtr_nodes`,
+  name-service limits, flow-control stalls) were all refuted by the trace;
+  the modem's "offset -1" `avs/audio` mapper request seen in bad boots is
+  the modem asking for the ADSP's audio PD, not the ADSP.
 
 To reproduce/debug an attach by hand (root), stage the tree the way the unit
 does and run the daemon directly, watching `dmesg` for `crash detected in adsp`
@@ -191,13 +228,13 @@ Confirmed = verified working on hardware.
 | Accelerometer + auto-rotation | yes | Native GNOME/mutter auto-rotation |
 | Ambient light sensor | yes | |
 | Proximity sensor | yes | |
-| Speakers | yes | Needs `aw88261-and-q6afe-fixes` |
+| Speakers | yes | Needs `q6afe-lpass-core-vote-response` |
 | Microphone | yes | |
 | Haptics (aw86927) | yes | |
 | Rear ultrawide camera (imx858) | yes | With autofocus (dw9719) |
 | Front camera (s5kjn1) | yes | |
 | Camera flash LED | yes | |
-| Thermal (8 PMIC zones) | yes | Needs `adc-tm5-processed-read` |
+| Thermal (8 PMIC zones) | yes | Upstream since 7.2 |
 | NFC (ST21NFC) | yes | `st21nfcd` driver + neard; tag reading |
 | USB-C DisplayPort out | yes | Single head; no MST |
 | USB gadget (ACM / NCM) | yes | |
