@@ -1,6 +1,10 @@
 --- a/drivers/firmware/qcom/qcom_scm.c
 +++ b/drivers/firmware/qcom/qcom_scm.c
-@@ -2297,2 +2297,3 @@
+@@ -2309,6 +2309,7 @@
+ 	{ .compatible = "dell,latitude-7455" },
+ 	{ .compatible = "dell,xps13-9345" },
  	{ .compatible = "ecs,liva-qc710" },
 +	{ .compatible = "fairphone,fp5" },
+ 	{ .compatible = "honor,magicbook-art-14-snapdragon" },
  	{ .compatible = "hp,elitebook-ultra-g1q" },
+ 	{ .compatible = "hp,omnibook-x14" },
