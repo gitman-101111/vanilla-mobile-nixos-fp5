@@ -27,23 +27,35 @@ been done on U-Boot to allow going from the Android bootloader to a UEFI environ
 
 The main thing that's needed for most devices is U-Boot and kernel/drivers support.
 Below is a list of what's already in this repository. For other devices, start with
-looking at the [postmarketOS Wiki](https://wiki.postmarketos.org/wiki/Devices) and [this](https://gitlab.postmarketos.org/tauchgang/tauchgang-ci/-/blob/main/devices.toml)
+looking at the [Nura Wiki](https://wiki.nura.eco/wiki/Devices) and [this](https://gitlab.nura.eco/tauchgang/tauchgang-ci/-/blob/main/devices.toml)
 list of devices supported by Tauchgang U-Boot.
 Many of the devices that work best for mobile Linux are older devices you can buy
 secondhand.
 
 Tested Devices:
+- [Xiaomi POCO F1 Tianma (xiaomi-beryllium)](docs/xiaomi-beryllium.md)
+  - SIM card currently untested.
 - [Fairphone 5 (fairphone-fp5)](docs/fairphone-fp5.md)
   - Modem registers; voice calls need q6voiced wiring (see the hardware table).
   - Main camera driver needed.
 
 Implemented but untested:
-- Samsung Galaxy A2 Core U-Boot (package only; no device module)
+- Xiaomi POCO F1 EBBG
+  - Will need to be added to alsa-ucm-conf-sdm845 like I did for Tianma [here](https://gitlab.com/sdm845-mainline/alsa-ucm-conf/-/merge_requests/32).
+    Run this command to find out what symlink needs to be added:
+    `nix-shell -p alsa-utils --run "strace alsaucm reload"`
+- SDM845 kernel with non-beryllium devices.
+  - OnePlus 6 (oneplus-enchilada)
+  - OnePlus 6T (oneplus-fajita)
+  - Samsung Galaxy S9 (samsung-starqltechn)
+  - SHIFT SHIFT6mq (shift-axolotl)
+- Samsung Galaxy A2 Core U-Boot
 
-This fork is maintained for the Fairphone 5 only. The Xiaomi POCO F1 and
-OnePlus 6 (sdm845) support that upstream vanilla-mobile-nixos carries was
-removed here, because the sdm845 kernel tracks a separate patch set that
-cannot follow `pkgs.linux_latest`.
+This fork is maintained for the Fairphone 5, whose kernel tracks
+`pkgs.linux_latest`. The other devices are kept as upstream has them (the
+sdm845 kernel stays pinned to its own patch series) so the fork merges
+cleanly with upstream; this fork's CI only builds the Fairphone 5 packages
+(see `atelier.toml`).
 
 ## What software should I use?
 
@@ -63,5 +75,5 @@ See the instructions linked in [the devices list](#what-devices-are-supported) a
 
 ## Acknowledgements
 
-- [postmarketOS](https://postmarketos.org/). Their community is doing incredible work continually pushing things forward for everyone.
+- [Nura](https://nura.eco/). Their community is doing incredible work continually pushing things forward for everyone.
 - [chayleaf](https://pavluk.org/). They made [a detailed blog post](https://pavluk.org/blog/2023/12/19/oneplus_6.html) on doing this with their OnePlus 6 that I wish I found sooner.

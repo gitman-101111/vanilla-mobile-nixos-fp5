@@ -1,5 +1,39 @@
 systems = ["aarch64-linux"]
 
+# Fork-only: CI builds just what the Fairphone 5 uses. Everything else in the
+# tree (Hyprland extras, other devices, anything a merge from upstream brings
+# in) is left as upstream has it but never built here, so its breakage can't
+# fail this fork's Gate. This is an allowlist: a new FP5 package has to be
+# added below to get CI coverage.
+include = [
+  # Kernel, boot and firmware
+  "packages.*.linuxKernels/linux_fairphone_fp5",
+  "packages.*.linuxKernels/linux_fairphone_fp5-configfile",
+  "packages.*.ubootPackages/fairphone-fp5",
+  "packages.*.ubootPackages/fairphone-fp5-boot-image",
+  "packages.*.fairphone-fp5-verified-boot/avb-boot-sign",
+  "packages.*.fairphone-fp5-verified-boot/uboot-efi-keys",
+  "packages.*.fairphone-fp5-firmware",
+  "packages.*.pil-squasher",
+
+  # qcm6490 services (DSP, modem, audio, sensors)
+  "packages.*.hexagonrpc",
+  "packages.*.pd-mapper",
+
+  # Fingerprint reader
+  "packages.*.ftharness",
+  "packages.*.ffsupplicant",
+  "packages.*.libfprint-focaltech",
+
+  # Shared vanilla-mobile modules the FP5 config enables
+  "packages.*.mobile-config-firefox",
+  "packages.*.swclock-offset",
+  "packages.*.unudhcpd",
+  "packages.*.usb-moded",
+  "packages.*.usb-moded-notify",
+  "packages.*.ssu-sysinfo",
+]
+
 # Caches checked before building; an attr already in one is skipped.
 # These are also injected into the nix.conf used at build time.
 substituters = ["https://vanilla-mobile-nixos.cachix.org"]

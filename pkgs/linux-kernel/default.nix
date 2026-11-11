@@ -6,5 +6,8 @@ lib.concatMapAttrs
     "${name}-configfile" = value.configfile;
   })
   {
+    # Pinned to the version its patch series was rebased on.
+    linux_sdm845 = pkgs.callPackage ./sdm845 { };
+    # Tracks pkgs.linux_latest; see update.yml for the weekly patch/config canary.
     linux_fairphone_fp5 = pkgs.callPackage ./fairphone-fp5 { };
   }

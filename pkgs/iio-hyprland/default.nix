@@ -14,20 +14,14 @@
 
 stdenv.mkDerivation {
   pname = "iio-hyprland";
-  version = "0-unstable-2026-02-26";
+  version = "0-unstable-2026-09-07";
 
   src = fetchFromGitHub {
     owner = "JeanSchoeller";
     repo = "iio-hyprland";
-    rev = "1dec30019fbe8cd375b6050eb597a01328435d79";
-    hash = "sha256-YTbCWQVmpshvtY//e6kPQtbn/Msbjx9NN0j0LQFzfNE=";
+    rev = "8f562190a057c0b2b18dc703041da1a4a447a2a6";
+    hash = "sha256-RrknSGqeQH5vGnOnhoj13/tQ1AD07oz+xGMcvAnPkvc=";
   };
-
-  patches = [
-    # Switch to Hyprland Lua syntax.
-    # See <https://github.com/JeanSchoeller/iio-hyprland/pull/42>.
-    ./lua-support.patch
-  ];
 
   buildInputs = [ dbus ];
   nativeBuildInputs = [

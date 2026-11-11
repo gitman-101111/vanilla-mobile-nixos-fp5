@@ -6,14 +6,14 @@
 
 stdenv.mkDerivation (finalAttrs: {
   pname = "mobile-config-firefox";
-  version = "5.4.0";
+  version = "5.5.2";
 
   src = fetchFromGitLab {
-    domain = "gitlab.postmarketos.org";
-    owner = "postmarketOS";
+    domain = "gitlab.nura.eco";
+    owner = "nura";
     repo = "mobile-config-firefox";
     tag = finalAttrs.version;
-    hash = "sha256-lqaNqMzZpH4np2ZvGP1W517G2kqPrDGa0Xz8SOCohkc=";
+    hash = "sha256-XxOLkTyEYTfdK55dsfZOL8GguHv/6JdmAv2xwcoaxDY=";
   };
 
   dontBuild = true;
@@ -31,7 +31,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   meta = {
     description = "Firefox tweaks for mobile and privacy";
-    homepage = "https://gitlab.postmarketos.org/postmarketOS/mobile-config-firefox";
+    homepage = "https://gitlab.nura.eco/nura/mobile-config-firefox";
     license = lib.licenses.gpl3Plus;
     maintainers = with lib.maintainers; [ junestepp ];
     platforms = lib.platforms.all;

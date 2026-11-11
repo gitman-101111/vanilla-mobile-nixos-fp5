@@ -1,6 +1,7 @@
 self:
 {
   lib,
+  pkgs,
   config,
   ...
 }:
@@ -10,7 +11,7 @@ in
 {
   options.services.q6voiced = {
     enable = lib.mkEnableOption "q6voice call audio routing";
-    package = lib.mkPackageOption self.packages "q6voiced" { };
+    package = lib.mkPackageOption pkgs "q6voiced" { };
 
     settings = {
       q6voice_card = lib.mkOption {
