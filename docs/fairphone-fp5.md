@@ -92,8 +92,7 @@ upstream and should be dropped.
 | File | Purpose |
 | --- | --- |
 | `default.nix` | qcm6490 module: options `audio`/`modem`/`sensors`/`nfc`/`fingerprint`; wires hexagonrpcd, the sensor stack, `/persist`, neard, ffsupplicant, focal32-load, fprintd and PAM |
-| `fairphone-fp5.nix` | Device definition: partitions, firmware, U-Boot, accel mount matrix, mutter overlay, enables the qcm6490 SoC + NFC |
-| `mutter-portrait-autorotate.patch` | Backport of the upstream mutter fix for a portrait device with no tablet-mode switch, enabling native auto-rotation |
+| `fairphone-fp5.nix` | Device definition: partitions, firmware, U-Boot, accel mount matrix, enables the qcm6490 SoC + NFC |
 | `iio-sensor-proxy-wait-for-hotplug.patch` | Keeps iio-sensor-proxy alive when no SSC sensor exists at startup; udev cannot re-trigger the service for SSC sensors, which are not kernel devices |
 | `fp5-ucm/` | ALSA UCM profile (speaker, mic, DP) |
 

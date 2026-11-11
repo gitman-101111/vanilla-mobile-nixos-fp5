@@ -128,22 +128,6 @@ in
       };
     };
 
-    # Screen auto-rotation. mutter 50.2 permanently inhibits its orientation
-    # tracking on a portrait phone with no tablet-mode switch: the first
-    # event runs a docked-convertible workaround that inhibits tracking, and
-    # with no dock transition to balance it the accelerometer is released
-    # forever. mutter main fixed this with an idempotent inhibit; the patch
-    # backports it.
-    nixpkgs.overlays = [
-      (final: prev: {
-        mutter = prev.mutter.overrideAttrs (old: {
-          patches = (old.patches or [ ]) ++ [
-            ./mutter-portrait-autorotate.patch
-          ];
-        });
-      })
-    ];
-
     # Orientation of the accelerometer as mounted in this chassis. Without it
     # the sensor reports in its own frame and screen rotation is inverted.
     # Matches the same DSP nodes the SSC opt-in in soc/qcm6490 tags.
