@@ -65,7 +65,6 @@ On top of what mainline provides. Paths are relative to the repository root.
 | `fairphone-fp5-board-support.patch` | Board device tree, rear-camera (imx858) wiring and driver, board audio — imported from sc7280-mainline |
 | `fp5-audio.dtsi`, `fp5-camera.dtsi` | Device-tree fragments referenced by the board-support patch |
 | `imx858.c`, `imx858-kconfig` | Rear ultrawide camera sensor driver |
-| `q6afe-lpass-core-vote-response.patch` | q6afe LPASS core clock-vote response fix; without it the aw88261 speaker amps never start and the speakers stay silent (the aw88261 driver fixes that used to accompany it are upstream since 7.2) |
 | `hci-qca-drop-unused-event.patch` | WCN6750 sends the baudrate-change complete event asynchronously; drops the spurious event so Bluetooth registers |
 | `ptn36502-redriver-startup-delay.patch` | Gives the USB-C redriver rail settling time so DP/display probes reliably |
 | `st21nfcd-nfc-driver.patch` | New `st21nfcd` raw-NCI I²C driver (the ST54-generation chip speaks NCI without NDLC framing, so `st-nci` cannot attach) + its DT node on `i2c9` |
@@ -227,7 +226,7 @@ Confirmed = verified working on hardware.
 | Accelerometer + auto-rotation | yes | Native GNOME/mutter auto-rotation |
 | Ambient light sensor | yes | |
 | Proximity sensor | yes | |
-| Speakers | yes | Needs `q6afe-lpass-core-vote-response` |
+| Speakers | yes | Needs the q6afe LPASS core vote fix, upstream since 7.3.4 |
 | Microphone | yes | |
 | Haptics (aw86927) | yes | |
 | Rear ultrawide camera (imx858) | yes | With autofocus (dw9719) |

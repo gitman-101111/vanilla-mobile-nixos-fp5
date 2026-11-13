@@ -72,15 +72,6 @@ kernel.override {
       name = "hci-qca-drop-unused-event";
       patch = ./hci-qca-drop-unused-event.patch;
     }
-    # AFE clock voting: the LPASS core hw-vote response carries a bare u32,
-    # not an aprv2_ibasic_rsp_result_t, so q6afe misread it and the aw88261
-    # amps never left "device start failed" (no speaker sound). The aw88261
-    # driver fixes that used to ride along here landed upstream in 7.2; the
-    # q6afe hunk is not upstream.
-    {
-      name = "q6afe-lpass-core-vote-response";
-      patch = ./q6afe-lpass-core-vote-response.patch;
-    }
     # NFC. The chip is on i2c9 at 0x08 (mainline's "@ 28" comment copies a
     # sloppy downstream node name; the downstream reg and a live probe both
     # say 0x08), reset on gpio38, IRQ on gpio41, and it speaks raw NCI 2.0
